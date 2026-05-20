@@ -1,0 +1,49 @@
+video:
+  # Use "0" for webcam, an RTSP URL, or a local file such as videos/test.mp4.
+  source: "0"
+  resize_width: 1280
+  resize_height: 720
+  frame_skip: 0
+  reconnect_attempts: 5
+  reconnect_delay_sec: 2.0
+  buffer_size: 1
+
+detector:
+  model_path: "yolov8n.pt"
+  confidence_threshold: 0.5
+  iou_threshold: 0.45
+  image_size: 640
+  # Empty string lets Ultralytics choose. Examples: "cpu", "mps" on Apple Silicon, "0" for CUDA.
+  device: ""
+  # YOLO COCO weights do not include a drone class. These defaults are useful sky proxies until
+  # custom/VisDrone weights are added. Set [] to return every detected class.
+  target_classes:
+    - drone
+    - uav
+    - quadcopter
+    - airplane
+    - bird
+    - kite
+
+tracker:
+  iou_match_threshold: 0.25
+  max_track_age_sec: 2.0
+  min_box_area: 8
+
+alert:
+  confidence_threshold: 0.5
+  persistence_frames: 5
+  window_seconds: 2.0
+  cooldown_seconds: 1.0
+
+ui:
+  window_name: "Fast Drone Detection PoC"
+  show_window: true
+  fullscreen: false
+  draw_all_tracks: true
+  save_output: false
+  output_path: "videos/annotated_output.mp4"
+
+logging:
+  level: "INFO"
+

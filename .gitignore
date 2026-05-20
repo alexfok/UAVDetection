@@ -1,0 +1,31 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local Python environments
+.venv/
+venv/
+env/
+
+# Generated media and assessment output
+runs/
+reports/
+videos/**
+!videos/.gitkeep
+
+# Model artifacts and downloaded weights
+yolov*.pt
+*.pt
+*.onnx
+*.engine
+models/**
+!models/.gitkeep
+
+# Common generated media
+*.mp4
+*.mov
+*.MOV
+*.avi
+*.mkv
+*.webm
