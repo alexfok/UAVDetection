@@ -81,6 +81,34 @@ python scripts/assess_media.py videos/Roni/raw_data \
   --frame-step 3
 ```
 
+Run the drone-specific YOLOv11x model from Hugging Face:
+
+```bash
+mkdir -p models
+curl -L -o models/doguilmak_drone_yolo11x_best.pt \
+  https://huggingface.co/doguilmak/Drone-Detection-YOLOv11x/resolve/main/weight/best.pt
+
+python scripts/assess_media.py videos/Roni/raw_data \
+  --model models/doguilmak_drone_yolo11x_best.pt \
+  --target-label drone \
+  --conf 0.3 \
+  --iou 0.5 \
+  --save-annotated \
+  --run-name roni_raw_data_drone_yolo11x \
+  --device cpu
+```
+
+Compare two completed assessment JSON files:
+
+```bash
+python scripts/compare_assessments.py \
+  reports/roni_raw_data_detection_assessment_20260520_173524/assessment.json \
+  reports/<drone-yolo11x-run>/assessment.json \
+  --baseline-name yolov8n-coco-proxy \
+  --candidate-name drone-yolo11x \
+  --output reports/model_comparison_yolov8n_vs_drone_yolo11x.md
+```
+
 Export a customer-facing PDF for a completed run:
 
 ```bash
@@ -125,6 +153,22 @@ Video outputs are saved as annotated `.mp4` files with labels and bounding boxes
 | 2026-05-20 17:55 IDT | `videos/Roni/raw_data` | `scripts/assess_media.py ... --save-annotated --run-name roni_raw_data_detection_assessment --device cpu --annotate-batch-size 16` | `reports/roni_raw_data_detection_assessment_20260520_173524/` | Videos: 9 good, 11 neutral, 0 bad. Images: 8 good, 9 neutral, 72 bad. |
 
 Generated report artifacts are local by default and are not intended to be pushed to GitHub unless explicitly needed.
+
+## Drone-Specific Model Evaluation
+
+The Hugging Face model `doguilmak/Drone-Detection-YOLOv11x` is a YOLOv11x checkpoint trained for one class: `drone`.
+
+Why it is useful here:
+
+- It provides a true `drone` class instead of relying on COCO proxy labels such as `airplane`, `bird`, and `kite`.
+- It loads directly with Ultralytics YOLO in the current code path.
+- It can be used with `scripts/assess_media.py` by passing `--model models/doguilmak_drone_yolo11x_best.pt --target-label drone`.
+
+Comparison caveat:
+
+- `yolov8n.pt` is a broad COCO object detector. It can produce Good, Neutral, and Bad categories because it detects many object classes.
+- `doguilmak/Drone-Detection-YOLOv11x` is a single-class drone detector. It will mostly produce Good or Bad categories; Neutral is not very meaningful because the model does not detect non-drone objects.
+- Real performance comparison needs manually labeled ground truth. Without ground truth, the comparison report should be treated as triage: which files each model flags for review, where they agree, and where they disagree.
 
 ## Configuration
 
