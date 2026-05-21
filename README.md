@@ -106,7 +106,8 @@ python scripts/compare_assessments.py \
   reports/<drone-yolo11x-run>/assessment.json \
   --baseline-name yolov8n-coco-proxy \
   --candidate-name drone-yolo11x \
-  --output reports/model_comparison_yolov8n_vs_drone_yolo11x.md
+  --output reports/model_comparison_yolov8n_vs_drone_yolo11x.md \
+  --pdf-output reports/model_comparison_yolov8n_vs_drone_yolo11x.pdf
 ```
 
 Export a customer-facing PDF for a completed run:
@@ -145,12 +146,17 @@ reports/<run-name>_<YYYYMMDD_HHMMSS>/
 
 Video outputs are saved as annotated `.mp4` files with labels and bounding boxes. Image outputs are saved in their corresponding category folders with labels and boxes drawn where detections exist.
 
+Each assessment run also writes `run_metadata.json` with total elapsed time, model load time, media processing time, analyzed frame counts, and category totals.
+
 ## Run History
 
 | Date/time | Dataset | Command summary | Result destination | Summary |
 |---|---|---|---|---|
 | 2026-05-19 09:42 IDT | `videos/Roni/drive-download-20260519T062344Z-3-001` | `scripts/assess_media.py ... --device cpu` | `reports/roni_media_detection_assessment.md`, `reports/roni_media_detection_assessment.json` | Videos: 6 good, 14 neutral, 0 bad. Images: 0 good, 1 neutral, 0 bad. |
 | 2026-05-20 17:55 IDT | `videos/Roni/raw_data` | `scripts/assess_media.py ... --save-annotated --run-name roni_raw_data_detection_assessment --device cpu --annotate-batch-size 16` | `reports/roni_raw_data_detection_assessment_20260520_173524/` | Videos: 9 good, 11 neutral, 0 bad. Images: 8 good, 9 neutral, 72 bad. |
+| 2026-05-20 20:16 IDT | `videos/Roni/raw_data` | `scripts/assess_media.py ... --model yolov8n.pt --save-annotated --run-name roni_raw_data_yolov8n_coco_full_timed --device cpu` | `reports/roni_raw_data_yolov8n_coco_full_timed_20260520_201629/` | Full every-frame CPU run: 18m 44s. Videos: 9 good, 11 neutral, 0 bad. Images: 8 good, 9 neutral, 72 bad. |
+| 2026-05-20 20:35 IDT | `videos/Roni/raw_data` | `scripts/assess_media.py ... --model models/doguilmak_drone_yolo11x_best.pt --target-label drone --conf 0.3 --save-annotated --run-name roni_raw_data_drone_yolo11x_full_timed --device cpu` | `reports/roni_raw_data_drone_yolo11x_full_timed_20260520_203524/` | Full every-frame CPU run: 2h 59m 54s. Videos: 19 good, 0 neutral, 1 bad. Images: 48 good, 0 neutral, 41 bad. |
+| 2026-05-21 12:12 IDT | `videos/Roni/raw_data` | `scripts/compare_assessments.py ... --pdf-output ...` | `reports/model_comparison_yolov8n_vs_drone_yolo11x_full_20260521_121242/` | Comparative report with timing and per-video detected-frame KPI. Combined elapsed: 3h 18m 38s. |
 
 Generated report artifacts are local by default and are not intended to be pushed to GitHub unless explicitly needed.
 

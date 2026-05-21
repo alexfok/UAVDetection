@@ -94,6 +94,10 @@ def add_cover_page(
     y = draw_wrapped(ax, y, f"Model: {metadata.get('Model', '-')}", size=10)
     y = draw_wrapped(ax, y, f"Confidence / IoU / image size: {metadata.get('Confidence / IoU / image size', '-')}", size=10)
     y = draw_wrapped(ax, y, f"Video analysis: {metadata.get('Video analysis', '-')}", size=10)
+    if "Total elapsed" in metadata:
+        y = draw_wrapped(ax, y, f"Total elapsed: {metadata.get('Total elapsed')}", size=10)
+    if "Media processing" in metadata:
+        y = draw_wrapped(ax, y, f"Media processing: {metadata.get('Media processing')}", size=10)
     y -= LINE
 
     y = draw_heading(ax, y, "Media Definitions")
@@ -199,8 +203,8 @@ def video_rows(items: list[dict[str, object]]) -> list[list[str]]:
         labels = labels_text(item)
         first = (
             f"{Path(str(item['path'])).name} | duration {item.get('duration_seconds') or '-'}s | "
-            f"analyzed frames {item['sampled_frames']} | object frames {item['frames_with_objects']} | "
-            f"UAV/proxy frames {item['frames_with_uav_proxy']}"
+            f"analyzed frames {item['sampled_frames']} | any-object detected frames {item['frames_with_objects']} | "
+            f"target-detected frames {item['frames_with_uav_proxy']}"
         )
         rows.append([first, *wrap(f"Labels: {labels}", width=150)])
     return rows

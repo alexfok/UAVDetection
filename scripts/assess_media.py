@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import time
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -92,6 +93,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    run_started_at = datetime.now().astimezone()
+    run_started_perf = time.perf_counter()
     if args.frame_step < 1:
         raise SystemExit("--frame-step must be >= 1")
     if args.annotate_batch_size < 1:
@@ -102,7 +105,9 @@ def main() -> int:
         raise SystemExit(f"No supported media files found in {args.media_dir}")
 
     run_dir = prepare_run_dir(args)
+    model_load_started = time.perf_counter()
     model = YOLO(args.model)
+    model_load_elapsed = time.perf_counter() - model_load_started
     names = normalise_names(model.names)
     requested_targets = tuple(args.target_labels or DEFAULT_TARGET_LABELS)
     available_targets = {
@@ -112,6 +117,7 @@ def main() -> int:
     }
 
     assessments: list[MediaAssessment] = []
+    media_processing_started = time.perf_counter()
     for index, path in enumerate(media_paths, start=1):
         print(f"[{index}/{len(media_paths)}] assessing {path.name}", flush=True)
         if args.save_annotated and path.suffix.lower() in VIDEO_EXTENSIONS:
@@ -123,6 +129,23 @@ def main() -> int:
         else:
             assessment = assess_image(path, model, args, available_targets, names)
         assessments.append(assessment)
+    media_processing_elapsed = time.perf_counter() - media_processing_started
+
+    run_ended_at = datetime.now().astimezone()
+    run_elapsed = time.perf_counter() - run_started_perf
+    run_metadata = build_run_metadata(
+        args=args,
+        assessments=assessments,
+        requested_targets=requested_targets,
+        available_targets=available_targets,
+        names=names,
+        run_started_at=run_started_at,
+        run_ended_at=run_ended_at,
+        run_elapsed_seconds=run_elapsed,
+        model_load_seconds=model_load_elapsed,
+        media_processing_seconds=media_processing_elapsed,
+    )
+    args.run_metadata = run_metadata
 
     args.output_md.parent.mkdir(parents=True, exist_ok=True)
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
@@ -132,14 +155,17 @@ def main() -> int:
         json.dumps([assessment_to_dict(item) for item in assessments], indent=2),
         encoding="utf-8",
     )
+    metadata_path = write_run_metadata(args, run_metadata)
 
     video_counts = Counter(item.status for item in assessments if item.kind == "video")
     image_counts = Counter(item.status for item in assessments if item.kind == "image")
     print()
     print(f"Wrote {args.output_md}")
     print(f"Wrote {args.output_json}")
+    print(f"Wrote {metadata_path}")
     if args.save_annotated:
         print(f"Wrote annotated media under {run_dir}")
+    print(f"Elapsed: {format_elapsed(run_elapsed)}")
     print(
         "Videos: "
         f"good={video_counts.get('good', 0)}, "
@@ -174,6 +200,80 @@ def prepare_run_dir(args: argparse.Namespace) -> Path | None:
         (run_dir / folder).mkdir(parents=True, exist_ok=True)
         (run_dir / "images" / folder).mkdir(parents=True, exist_ok=True)
     return run_dir
+
+
+def build_run_metadata(
+    args: argparse.Namespace,
+    assessments: list[MediaAssessment],
+    requested_targets: Iterable[str],
+    available_targets: set[str],
+    names: dict[int, str],
+    run_started_at: datetime,
+    run_ended_at: datetime,
+    run_elapsed_seconds: float,
+    model_load_seconds: float,
+    media_processing_seconds: float,
+) -> dict[str, object]:
+    videos = [item for item in assessments if item.kind == "video"]
+    images = [item for item in assessments if item.kind == "image"]
+    video_counts = Counter(item.status for item in videos)
+    image_counts = Counter(item.status for item in images)
+    total_analyzed_frames = sum(item.sampled_frames for item in assessments)
+    total_object_frames = sum(item.frames_with_objects for item in videos)
+    total_target_frames = sum(item.frames_with_uav_proxy for item in videos)
+
+    return {
+        "started_at": run_started_at.isoformat(),
+        "ended_at": run_ended_at.isoformat(),
+        "elapsed_seconds": round(run_elapsed_seconds, 3),
+        "elapsed_human": format_elapsed(run_elapsed_seconds),
+        "model_load_seconds": round(model_load_seconds, 3),
+        "media_processing_seconds": round(media_processing_seconds, 3),
+        "media_processing_human": format_elapsed(media_processing_seconds),
+        "dataset": str(args.media_dir),
+        "model": args.model,
+        "confidence": args.conf,
+        "iou": args.iou,
+        "image_size": args.imgsz,
+        "device": args.device or "auto",
+        "save_annotated": bool(args.save_annotated),
+        "frame_step": args.frame_step,
+        "max_video_frames": args.max_video_frames,
+        "max_width": args.max_width,
+        "max_height": args.max_height,
+        "requested_target_labels": list(requested_targets),
+        "available_target_labels": sorted(available_targets),
+        "model_labels": [names[index] for index in sorted(names)],
+        "total_media": len(assessments),
+        "total_videos": len(videos),
+        "total_images": len(images),
+        "total_analyzed_frames": total_analyzed_frames,
+        "total_video_any_object_detected_frames": total_object_frames,
+        "total_video_target_detected_frames": total_target_frames,
+        "videos": dict(video_counts),
+        "images": dict(image_counts),
+    }
+
+
+def write_run_metadata(args: argparse.Namespace, run_metadata: dict[str, object]) -> Path:
+    run_dir = getattr(args, "run_dir", None)
+    if run_dir:
+        metadata_path = run_dir / "run_metadata.json"
+    else:
+        metadata_path = args.output_json.with_name(f"{args.output_json.stem}_run_metadata.json")
+    metadata_path.write_text(json.dumps(run_metadata, indent=2), encoding="utf-8")
+    return metadata_path
+
+
+def format_elapsed(seconds: float) -> str:
+    whole_seconds = int(round(seconds))
+    minutes, sec = divmod(whole_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m {sec}s"
+    if minutes:
+        return f"{minutes}m {sec}s"
+    return f"{sec}s"
 
 
 def list_media(media_dir: Path) -> list[Path]:
@@ -712,6 +812,7 @@ def build_markdown_report(
     image_counts = Counter(item.status for item in images)
     model_labels = ", ".join(names[index] for index in sorted(names))
     run_dir = getattr(args, "run_dir", None)
+    run_metadata = getattr(args, "run_metadata", None)
     video_analysis = (
         f"every `{args.frame_step}` frame(s), with annotated video output"
         if args.save_annotated
@@ -766,6 +867,21 @@ def build_markdown_report(
         summary_row("Images", images, image_counts),
         "",
     ]
+    if run_metadata:
+        lines.extend(
+            [
+                "## Timing",
+                "",
+                f"- Total elapsed: `{run_metadata['elapsed_human']}` (`{run_metadata['elapsed_seconds']}` seconds)",
+                f"- Model load: `{run_metadata['model_load_seconds']}` seconds",
+                (
+                    "- Media processing: "
+                    f"`{run_metadata['media_processing_human']}` (`{run_metadata['media_processing_seconds']}` seconds)"
+                ),
+                f"- Total analyzed frames/items: `{run_metadata['total_analyzed_frames']}`",
+                "",
+            ]
+        )
 
     lines.extend(category_section("Good Movies", [item for item in videos if item.status == "good"]))
     lines.extend(category_section("Neutral Movies", [item for item in videos if item.status == "neutral"]))
@@ -806,7 +922,7 @@ def category_section(title: str, items: list[MediaAssessment]) -> list[str]:
 
     lines.extend(
         [
-            "| File | Status | Duration | Sampled | Object frames | UAV/proxy frames | Labels | Annotated output |",
+            "| File | Status | Duration | Analyzed frames | Any-object detected frames | Target-detected frames | Labels | Annotated output |",
             "|---|---|---:|---:|---:|---:|---|---|",
         ]
     )
