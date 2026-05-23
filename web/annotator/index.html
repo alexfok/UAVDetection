@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Drone Annotation</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="field grow">
+          <label for="folderInput">Media folder</label>
+          <input id="folderInput" type="text" spellcheck="false" placeholder="videos/Roni/raw_data">
+        </div>
+        <button id="scanButton" type="button">Scan</button>
+        <div class="field grow">
+          <label for="projectInput">Annotation project</label>
+          <input id="projectInput" type="text" spellcheck="false" placeholder="annotations/web_drone_v1">
+        </div>
+        <div class="field small">
+          <label for="splitSelect">Split</label>
+          <select id="splitSelect">
+            <option value="train">train</option>
+            <option value="val">val</option>
+          </select>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside class="mediaPanel">
+          <div class="panelHeader">
+            <strong id="mediaCount">0 files</strong>
+            <select id="kindFilter">
+              <option value="all">all</option>
+              <option value="video">video</option>
+              <option value="image">image</option>
+            </select>
+          </div>
+          <div id="mediaList" class="mediaList"></div>
+        </aside>
+
+        <section class="stage">
+          <div class="stageToolbar">
+            <button id="prevButton" type="button">Prev</button>
+            <button id="nextButton" type="button">Next</button>
+            <button id="videoButton" type="button">Video</button>
+            <button id="playButton" type="button">Play</button>
+            <button id="pauseButton" type="button">Pause</button>
+            <button id="backButton" type="button">-1s</button>
+            <button id="forwardButton" type="button">+1s</button>
+            <button id="captureButton" type="button">Capture</button>
+            <button id="undoButton" type="button">Undo</button>
+            <button id="clearButton" type="button">Clear</button>
+            <button id="negativeButton" type="button">Save Negative</button>
+            <button id="saveButton" type="button" class="primary">Save Boxes</button>
+            <span id="statusText" class="status">Ready</span>
+          </div>
+
+          <div class="mediaTitle">
+            <span id="currentName">No media selected</span>
+            <span id="boxCount">0 boxes</span>
+          </div>
+
+          <div class="viewer">
+            <video id="videoPlayer" controls playsinline></video>
+            <img id="imagePreview" alt="">
+            <canvas id="annotationCanvas"></canvas>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

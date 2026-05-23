@@ -7,6 +7,7 @@ import numpy as np
 from ultralytics import YOLO
 
 from app.config import DetectorConfig
+from app.labels import display_label, normalise_label_aliases, resolve_target_class_ids
 from app.types import Detection
 
 LOGGER = logging.getLogger(__name__)
@@ -18,6 +19,7 @@ class DroneDetector:
         LOGGER.info("Loading YOLO model: %s", config.model_path)
         self.model = YOLO(config.model_path)
         self.names = self._normalise_names(self.model.names)
+        self.label_aliases = normalise_label_aliases(config.label_aliases)
         self.target_class_ids = self._resolve_target_classes(config.target_classes)
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
@@ -46,7 +48,8 @@ class DroneDetector:
 
         detections: list[Detection] = []
         for bbox, confidence, class_id in zip(xyxy, confidences, classes):
-            label = self.names.get(int(class_id), str(class_id))
+            raw_label = self.names.get(int(class_id), str(class_id))
+            label = display_label(raw_label, self.label_aliases)
             detections.append(
                 Detection(
                     bbox=tuple(int(value) for value in bbox),
@@ -69,17 +72,21 @@ class DroneDetector:
             LOGGER.info("No target class filter configured; detector will return all classes.")
             return None
 
-        ids = [class_id for class_id, name in self.names.items() if name.lower() in target_names]
+        ids = resolve_target_class_ids(self.names, targets, self.label_aliases)
         if not ids:
             LOGGER.warning(
                 "None of the configured target classes exist in this model: %s. "
-                "Detector will return all classes.",
+                "Detector will return all classes. Label aliases: %s",
                 sorted(target_names),
+                self.label_aliases,
             )
             return None
 
         LOGGER.info(
             "Filtering detector to classes: %s",
-            ", ".join(f"{self.names[class_id]}({class_id})" for class_id in ids),
+            ", ".join(
+                f"{self.names[class_id]}->{display_label(self.names[class_id], self.label_aliases)}({class_id})"
+                for class_id in ids
+            ),
         )
         return ids

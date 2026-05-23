@@ -11,6 +11,8 @@ env/
 # Generated media and assessment output
 runs/
 reports/
+annotations/
+datasets/
 videos/**
 !videos/.gitkeep
 

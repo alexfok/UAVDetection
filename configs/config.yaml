@@ -15,15 +15,13 @@ detector:
   image_size: 640
   # Empty string lets Ultralytics choose. Examples: "cpu", "mps" on Apple Silicon, "0" for CUDA.
   device: ""
-  # YOLO COCO weights do not include a drone class. These defaults are useful sky proxies until
-  # custom/VisDrone weights are added. Set [] to return every detected class.
+  # With COCO yolov8n.pt, "drone" resolves through label_aliases to airplane/kite.
+  # With a single-class trained drone model, it resolves directly to the model's drone class.
   target_classes:
     - drone
-    - uav
-    - quadcopter
-    - airplane
-    - bird
-    - kite
+  label_aliases:
+    airplane: drone
+    kite: drone
 
 tracker:
   iou_match_threshold: 0.25
@@ -46,4 +44,3 @@ ui:
 
 logging:
   level: "INFO"
-

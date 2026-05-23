@@ -23,8 +23,12 @@ class DetectorConfig:
     iou_threshold: float = 0.45
     image_size: int = 640
     device: str = ""
-    target_classes: list[str] = field(
-        default_factory=lambda: ["drone", "uav", "quadcopter", "airplane", "bird", "kite"]
+    target_classes: list[str] = field(default_factory=lambda: ["drone"])
+    label_aliases: dict[str, str] = field(
+        default_factory=lambda: {
+            "airplane": "drone",
+            "kite": "drone",
+        }
     )
 
 

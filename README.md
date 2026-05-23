@@ -2,12 +2,13 @@
 
 Standalone Python/OpenCV prototype for local UAV detection experiments from webcam, local video, RTSP streams, and offline media folders.
 
-The current baseline uses Ultralytics YOLO with general COCO weights (`yolov8n.pt`). COCO does not include true `drone`, `uav`, or `quadcopter` classes, so this project currently treats `airplane`, `bird`, and `kite` as UAV-like proxy labels until a drone-specific model is added.
+The current baseline uses Ultralytics YOLO with general COCO weights (`yolov8n.pt`). COCO does not include true `drone`, `uav`, or `quadcopter` classes, so this project can consolidate selected proxy labels. By default, `airplane` and `kite` are displayed and scored as `drone`.
 
 ## What Is Included
 
 - `app/`: live detection app with YOLO inference, simple tracking, persistence alerts, and OpenCV UI.
 - `scripts/assess_media.py`: batch media assessment and category output generation.
+- `scripts/annotation_server.py`: local browser UI for manually annotating frames/images into YOLO labels.
 - `scripts/export_assessment_pdf.py`: PDF exporter for customer-facing assessment reports.
 - `configs/config.yaml`: runtime configuration for sources, thresholds, target classes, UI, and output behavior.
 - `uav_detection_prototype*.md`: planning notes and prototype requirements.
@@ -81,6 +82,63 @@ python scripts/assess_media.py videos/Roni/raw_data \
   --frame-step 3
 ```
 
+## Manual Web Annotation
+
+Start the local annotation server:
+
+```bash
+python3 scripts/annotation_server.py \
+  --host 127.0.0.1 \
+  --port 8765 \
+  --default-folder videos/Roni/raw_data \
+  --project-dir annotations/web_drone_v1
+```
+
+Open:
+
+```text
+http://127.0.0.1:8765
+```
+
+If `8765` is already busy, either open the URL above to use the existing server, or start a second server on another port:
+
+```bash
+python3 scripts/annotation_server.py --port 8766
+```
+
+The web UI scans a local folder for movies/images. For videos, play to the desired moment, click `Capture`, draw boxes on the captured frame, then `Save Boxes`. For images, draw directly and save. `Save Negative` stores the current image/frame with an empty YOLO label file.
+
+Saved annotations are written as a YOLO dataset:
+
+```text
+annotations/web_drone_v1/
+  data.yaml
+  manifest.csv
+  images/
+    train/
+    val/
+  labels/
+    train/
+    val/
+```
+
+## Training Smoke Test
+
+Use this only to verify the training pipeline wiring. It creates a temporary tiny dataset from the current annotations, runs one CPU epoch, and writes the test model under `/private/tmp`; it is not expected to improve detection quality.
+
+```bash
+YOLO_CONFIG_DIR=/private/tmp/ultralytics MPLCONFIGDIR=/private/tmp/matplotlib \
+.venv/bin/python scripts/train_yolov8n_drone.py \
+  --smoke-from annotations/web_drone_v1 \
+  --project /private/tmp/uav_train_runs \
+  --name yolov8n_drone \
+  --output-model /private/tmp/yolov8n_drone_smoke_best.pt \
+  --device cpu \
+  --workers 0
+```
+
+For real training later, first collect a reviewed train/val annotation set with enough positive and negative samples, then run the same script without `--smoke-from` and point `--data` at the reviewed dataset `data.yaml`.
+
 Run the drone-specific YOLOv11x model from Hugging Face:
 
 ```bash
@@ -119,7 +177,7 @@ python scripts/export_assessment_pdf.py reports/roni_raw_data_detection_assessme
 
 ## Media Categories
 
-- Good media: at least one configured UAV-like target label was detected. With the current baseline model, those proxy labels are `airplane`, `bird`, and `kite`.
+- Good media: at least one configured UAV-like target label was detected. With the current baseline model, `airplane` and `kite` are consolidated to the displayed label `drone`.
 - Neutral media: one or more objects were detected, but no configured UAV-like target label was detected.
 - Bad media: no object was detected above the configured confidence threshold.
 - Unreadable media: the file could not be opened or decoded by the assessment pipeline.
@@ -185,6 +243,7 @@ Edit `configs/config.yaml` for:
 - `detector.model_path`: YOLO model, for example `yolov8n.pt` or `models/drone.pt`.
 - `detector.confidence_threshold`: per-frame detection threshold.
 - `detector.target_classes`: model class names to alert on.
+- `detector.label_aliases`: displayed label consolidation, currently `airplane: drone` and `kite: drone`.
 - `alert.persistence_frames`: required hits before alerting.
 - `alert.window_seconds`: time window for persistence.
 - `ui.save_output`: save annotated live output video.

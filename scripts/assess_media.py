@@ -17,7 +17,8 @@ from ultralytics import YOLO
 
 VIDEO_EXTENSIONS = {".avi", ".m4v", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"}
 IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
-DEFAULT_TARGET_LABELS = ("drone", "uav", "quadcopter", "airplane", "bird", "kite")
+DEFAULT_TARGET_LABELS = ("drone",)
+DEFAULT_LABEL_ALIASES = ("airplane=drone", "kite=drone")
 DEFAULT_OUTPUT_MD = Path("reports/roni_media_detection_assessment.md")
 DEFAULT_OUTPUT_JSON = Path("reports/roni_media_detection_assessment.json")
 
@@ -86,7 +87,14 @@ def parse_args() -> argparse.Namespace:
         "--target-label",
         action="append",
         dest="target_labels",
-        help="Label to treat as UAV/proxy. Repeat to provide multiple labels.",
+        help="Displayed label to treat as UAV/proxy. Repeat to provide multiple labels.",
+    )
+    parser.add_argument(
+        "--label-alias",
+        action="append",
+        dest="label_aliases",
+        default=list(DEFAULT_LABEL_ALIASES),
+        help="Map model labels before reporting/targeting, e.g. airplane=drone. Repeatable.",
     )
     return parser.parse_args()
 
@@ -109,11 +117,14 @@ def main() -> int:
     model = YOLO(args.model)
     model_load_elapsed = time.perf_counter() - model_load_started
     names = normalise_names(model.names)
+    label_aliases = parse_label_aliases(args.label_aliases)
+    display_names = {class_id: apply_label_alias(name, label_aliases) for class_id, name in names.items()}
     requested_targets = tuple(args.target_labels or DEFAULT_TARGET_LABELS)
+    requested_target_names = {label.strip().lower() for label in requested_targets if label and label.strip()}
     available_targets = {
-        label.strip().lower()
-        for label in requested_targets
-        if label and label.strip().lower() in {name.lower() for name in names.values()}
+        label.lower()
+        for label in display_names.values()
+        if label.lower() in requested_target_names
     }
 
     assessments: list[MediaAssessment] = []
@@ -121,13 +132,13 @@ def main() -> int:
     for index, path in enumerate(media_paths, start=1):
         print(f"[{index}/{len(media_paths)}] assessing {path.name}", flush=True)
         if args.save_annotated and path.suffix.lower() in VIDEO_EXTENSIONS:
-            assessment = assess_video_with_annotation(path, model, args, available_targets, names, run_dir)
+            assessment = assess_video_with_annotation(path, model, args, available_targets, display_names, run_dir)
         elif args.save_annotated:
-            assessment = assess_image_with_annotation(path, model, args, available_targets, names, run_dir)
+            assessment = assess_image_with_annotation(path, model, args, available_targets, display_names, run_dir)
         elif path.suffix.lower() in VIDEO_EXTENSIONS:
-            assessment = assess_video(path, model, args, available_targets, names)
+            assessment = assess_video(path, model, args, available_targets, display_names)
         else:
-            assessment = assess_image(path, model, args, available_targets, names)
+            assessment = assess_image(path, model, args, available_targets, display_names)
         assessments.append(assessment)
     media_processing_elapsed = time.perf_counter() - media_processing_started
 
@@ -139,6 +150,8 @@ def main() -> int:
         requested_targets=requested_targets,
         available_targets=available_targets,
         names=names,
+        display_names=display_names,
+        label_aliases=label_aliases,
         run_started_at=run_started_at,
         run_ended_at=run_ended_at,
         run_elapsed_seconds=run_elapsed,
@@ -149,7 +162,7 @@ def main() -> int:
 
     args.output_md.parent.mkdir(parents=True, exist_ok=True)
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
-    report = build_markdown_report(args, assessments, requested_targets, available_targets, names)
+    report = build_markdown_report(args, assessments, requested_targets, available_targets, names, label_aliases)
     args.output_md.write_text(report, encoding="utf-8")
     args.output_json.write_text(
         json.dumps([assessment_to_dict(item) for item in assessments], indent=2),
@@ -208,6 +221,8 @@ def build_run_metadata(
     requested_targets: Iterable[str],
     available_targets: set[str],
     names: dict[int, str],
+    display_names: dict[int, str],
+    label_aliases: dict[str, str],
     run_started_at: datetime,
     run_ended_at: datetime,
     run_elapsed_seconds: float,
@@ -243,7 +258,9 @@ def build_run_metadata(
         "max_height": args.max_height,
         "requested_target_labels": list(requested_targets),
         "available_target_labels": sorted(available_targets),
+        "label_aliases": label_aliases,
         "model_labels": [names[index] for index in sorted(names)],
+        "display_labels": [display_names[index] for index in sorted(display_names)],
         "total_media": len(assessments),
         "total_videos": len(videos),
         "total_images": len(images),
@@ -599,6 +616,24 @@ def predict_args_from_args(args: argparse.Namespace) -> dict[str, object]:
     return predict_args
 
 
+def parse_label_aliases(values: Iterable[str] | None) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for value in values or ():
+        if "=" not in value:
+            raise SystemExit(f"--label-alias must use source=target form: {value}")
+        source, target = value.split("=", 1)
+        source = source.strip().lower()
+        target = target.strip()
+        if not source or not target:
+            raise SystemExit(f"--label-alias must use non-empty source=target values: {value}")
+        aliases[source] = target
+    return aliases
+
+
+def apply_label_alias(label: str, aliases: dict[str, str]) -> str:
+    return aliases.get(label.strip().lower(), label)
+
+
 def new_detection_result() -> dict[str, object]:
     return {
         "label_counts": Counter(),
@@ -804,6 +839,7 @@ def build_markdown_report(
     requested_targets: Iterable[str],
     available_targets: set[str],
     names: dict[int, str],
+    label_aliases: dict[str, str],
 ) -> str:
     timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
     videos = [item for item in assessments if item.kind == "video"]
@@ -811,6 +847,7 @@ def build_markdown_report(
     video_counts = Counter(item.status for item in videos)
     image_counts = Counter(item.status for item in images)
     model_labels = ", ".join(names[index] for index in sorted(names))
+    alias_text = ", ".join(f"{source}->{target}" for source, target in sorted(label_aliases.items())) or "none"
     run_dir = getattr(args, "run_dir", None)
     run_metadata = getattr(args, "run_metadata", None)
     video_analysis = (
@@ -829,6 +866,7 @@ def build_markdown_report(
         f"- Confidence / IoU / image size: `{args.conf}` / `{args.iou}` / `{args.imgsz}`",
         f"- Video analysis: {video_analysis}",
         f"- Frame resize before inference: max `{args.max_width}x{args.max_height}`",
+        f"- Label aliases: `{alias_text}`",
         "",
         "## Classification Rule",
         "",
@@ -852,9 +890,8 @@ def build_markdown_report(
         "## Important Model Caveat",
         "",
         (
-            "The current default model is a general COCO detector. It does not contain true "
-            "`drone`, `uav`, or `quadcopter` classes. In this run, UAV-like detections can only "
-            f"come from model labels that overlap the requested target list: `{', '.join(sorted(available_targets)) or 'none'}`."
+            "For general COCO models, the report can consolidate proxy labels before scoring. "
+            f"In this run, the available displayed UAV-like target labels are `{', '.join(sorted(available_targets)) or 'none'}`."
         ),
         f"Requested UAV/proxy labels: `{', '.join(requested_targets)}`.",
         f"Model label set: `{model_labels}`.",
