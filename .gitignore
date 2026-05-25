@@ -17,6 +17,7 @@ videos/**
 !videos/.gitkeep
 
 # Model artifacts and downloaded weights
+certs/
 yolov*.pt
 *.pt
 *.onnx

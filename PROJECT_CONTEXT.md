@@ -114,17 +114,46 @@ This lets the COCO `yolov8n.pt` proxy detections display and score as `drone` wh
 Start server:
 
 ```bash
+export ANNOTATION_SERVER_PASSWORD='choose-a-strong-password'
 python3 scripts/annotation_server.py \
-  --host 127.0.0.1 \
+  --host 0.0.0.0 \
   --port 8765 \
   --default-folder videos/Roni/raw_data \
   --project-dir annotations/web_drone_v1
 ```
 
-Open:
+Open locally:
 
 ```text
 http://127.0.0.1:8765
+```
+
+Open from another computer on the LAN:
+
+```text
+http://<server-ip>:8765
+```
+
+The default username is `admin`. The password is taken from `ANNOTATION_SERVER_PASSWORD`, or generated for one server run if the env var is absent.
+
+For HTTPS, generate a self-signed cert and start with `--certfile` and `--keyfile`:
+
+```bash
+mkdir -p certs
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout certs/annotation.key \
+  -out certs/annotation.crt \
+  -days 30 \
+  -subj "/CN=drone-annotator"
+
+export ANNOTATION_SERVER_PASSWORD='choose-a-strong-password'
+python3 scripts/annotation_server.py \
+  --host 0.0.0.0 \
+  --port 8765 \
+  --certfile certs/annotation.crt \
+  --keyfile certs/annotation.key \
+  --default-folder videos/Roni/raw_data \
+  --project-dir annotations/web_drone_v1
 ```
 
 Workflow:

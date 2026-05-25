@@ -84,11 +84,12 @@ python scripts/assess_media.py videos/Roni/raw_data \
 
 ## Manual Web Annotation
 
-Start the local annotation server:
+Start the annotation server. By default it listens on all interfaces (`0.0.0.0`) so another computer on the LAN can open it.
 
 ```bash
+export ANNOTATION_SERVER_PASSWORD='choose-a-strong-password'
 python3 scripts/annotation_server.py \
-  --host 127.0.0.1 \
+  --host 0.0.0.0 \
   --port 8765 \
   --default-folder videos/Roni/raw_data \
   --project-dir annotations/web_drone_v1
@@ -99,6 +100,46 @@ Open:
 ```text
 http://127.0.0.1:8765
 ```
+
+From another computer on the same LAN, use this machine's IP address instead of `127.0.0.1`, for example:
+
+```text
+http://192.168.100.178:8765
+```
+
+The default username is `admin`. The password is read from `ANNOTATION_SERVER_PASSWORD`; if no password is provided, the server prints a generated one-time password at startup.
+
+To run with HTTPS, create a local self-signed certificate:
+
+```bash
+mkdir -p certs
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout certs/annotation.key \
+  -out certs/annotation.crt \
+  -days 30 \
+  -subj "/CN=drone-annotator"
+```
+
+Then start the server with TLS:
+
+```bash
+export ANNOTATION_SERVER_PASSWORD='choose-a-strong-password'
+python3 scripts/annotation_server.py \
+  --host 0.0.0.0 \
+  --port 8765 \
+  --certfile certs/annotation.crt \
+  --keyfile certs/annotation.key \
+  --default-folder videos/Roni/raw_data \
+  --project-dir annotations/web_drone_v1
+```
+
+Open:
+
+```text
+https://<this-machine-ip>:8765
+```
+
+Browsers will warn for a self-signed certificate; accept the warning only for your own trusted LAN.
 
 If `8765` is already busy, either open the URL above to use the existing server, or start a second server on another port:
 

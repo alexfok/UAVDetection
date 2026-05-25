@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import csv
+import hmac
 import hashlib
 import json
 import mimetypes
 import os
 import re
+import secrets
+import ssl
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,11 +43,21 @@ MANIFEST_FIELDS = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Local web annotation server for UAV/drone YOLO labels.")
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--default-folder", type=Path, default=Path("videos/Roni/raw_data"))
     parser.add_argument("--project-dir", type=Path, default=Path("annotations/web_drone_v1"))
     parser.add_argument("--class-name", default="drone")
+    parser.add_argument("--username", default="admin")
+    parser.add_argument("--password", help="HTTP Basic Auth password. Prefer --password-env for shared machines.")
+    parser.add_argument(
+        "--password-env",
+        default="ANNOTATION_SERVER_PASSWORD",
+        help="Environment variable to read the Basic Auth password from.",
+    )
+    parser.add_argument("--no-auth", action="store_true", help="Disable Basic Auth. Not recommended off localhost.")
+    parser.add_argument("--certfile", type=Path, help="TLS certificate file for HTTPS.")
+    parser.add_argument("--keyfile", type=Path, help="TLS private key file for HTTPS.")
     return parser.parse_args()
 
 
@@ -53,10 +67,43 @@ def main() -> int:
     server.default_folder = resolve_user_path(args.default_folder)
     server.default_project_dir = resolve_user_path(args.project_dir)
     server.class_name = args.class_name
+    server.auth_enabled = not args.no_auth
+    server.auth_username = args.username
+    server.auth_password = resolve_auth_password(args)
 
-    print(f"Annotation server: http://{args.host}:{args.port}")
+    scheme = "http"
+    if args.certfile:
+        certfile = resolve_user_path(args.certfile)
+        keyfile = resolve_user_path(args.keyfile) if args.keyfile else certfile
+        if not certfile.exists():
+            raise SystemExit(f"TLS certfile not found: {certfile}")
+        if not keyfile.exists():
+            raise SystemExit(f"TLS keyfile not found: {keyfile}")
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        scheme = "https"
+
+    generated_password = False
+    if server.auth_enabled and not server.auth_password:
+        server.auth_password = secrets.token_urlsafe(18)
+        generated_password = True
+        print("Generated one-time annotation password for this server run.")
+
+    display_host = local_display_host(args.host)
+    print(f"Annotation server: {scheme}://{display_host}:{args.port}")
     print(f"Default media folder: {server.default_folder}")
     print(f"Default annotation project: {server.default_project_dir}")
+    if server.auth_enabled:
+        print(f"Username: {server.auth_username}")
+        if generated_password:
+            print(f"Password: {server.auth_password}")
+        else:
+            print("Password: configured")
+    else:
+        print("WARNING: Basic Auth is disabled.")
+    if scheme == "http" and args.host not in {"127.0.0.1", "localhost", "::1"}:
+        print("WARNING: server is reachable over plain HTTP. Use --certfile/--keyfile for HTTPS.")
     server.serve_forever()
     return 0
 
@@ -65,12 +112,18 @@ class AnnotationServer(ThreadingHTTPServer):
     default_folder: Path
     default_project_dir: Path
     class_name: str
+    auth_enabled: bool
+    auth_username: str
+    auth_password: str
 
 
 class AnnotationHandler(BaseHTTPRequestHandler):
     server: AnnotationServer
 
     def do_GET(self) -> None:
+        if not self.require_auth():
+            return
+
         parsed = urlparse(self.path)
         if parsed.path in {"/", "/index.html"}:
             self.send_static(STATIC_ROOT / "index.html", "text/html; charset=utf-8")
@@ -102,6 +155,9 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
     def do_POST(self) -> None:
+        if not self.require_auth():
+            return
+
         parsed = urlparse(self.path)
         if parsed.path == "/api/scan":
             payload = self.read_json()
@@ -271,6 +327,39 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def require_auth(self) -> bool:
+        if not self.server.auth_enabled:
+            return True
+
+        header = self.headers.get("Authorization", "")
+        prefix = "Basic "
+        if not header.startswith(prefix):
+            self.send_auth_required()
+            return False
+
+        try:
+            decoded = base64.b64decode(header[len(prefix) :], validate=True).decode("utf-8")
+            username, password = decoded.split(":", 1)
+        except (binascii.Error, ValueError, UnicodeDecodeError):
+            self.send_auth_required()
+            return False
+
+        user_ok = hmac.compare_digest(username, self.server.auth_username)
+        pass_ok = hmac.compare_digest(password, self.server.auth_password)
+        if not (user_ok and pass_ok):
+            self.send_auth_required()
+            return False
+        return True
+
+    def send_auth_required(self) -> None:
+        body = b"Authentication required\n"
+        self.send_response(HTTPStatus.UNAUTHORIZED)
+        self.send_header("WWW-Authenticate", 'Basic realm="Drone Annotation"')
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def log_message(self, format: str, *args: object) -> None:
         print(f"{self.address_string()} - {format % args}")
 
@@ -280,6 +369,24 @@ def resolve_user_path(value: str | os.PathLike[str]) -> Path:
     if not path.is_absolute():
         path = PROJECT_ROOT / path
     return path.resolve()
+
+
+def resolve_auth_password(args: argparse.Namespace) -> str:
+    if args.no_auth:
+        return ""
+    if args.password:
+        return args.password
+    if args.password_env:
+        return os.environ.get(args.password_env, "")
+    return ""
+
+
+def local_display_host(host: str) -> str:
+    if host == "0.0.0.0":
+        return "localhost"
+    if host == "::":
+        return "[::1]"
+    return host
 
 
 def guess_content_type(path: Path) -> str:
@@ -414,4 +521,3 @@ def upsert_manifest(path: Path, row: dict[str, str]) -> None:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
