@@ -163,6 +163,15 @@ class AnnotationHandler(BaseHTTPRequestHandler):
             payload = self.read_json()
             self.scan_folder(str(payload.get("folder") or self.server.default_folder))
             return
+        if parsed.path == "/api/stats":
+            payload = self.read_json()
+            self.send_json(
+                build_dashboard_stats(
+                    str(payload.get("folder") or self.server.default_folder),
+                    str(payload.get("project_dir") or self.server.default_project_dir),
+                )
+            )
+            return
         if parsed.path == "/api/save":
             payload = self.read_json()
             self.save_annotation(payload)
@@ -279,6 +288,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type or guess_content_type(resolved))
         self.send_header("Content-Length", str(len(data)))
+        self.send_no_cache_headers()
         self.end_headers()
         self.wfile.write(data)
 
@@ -324,8 +334,14 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        self.send_no_cache_headers()
         self.end_headers()
         self.wfile.write(data)
+
+    def send_no_cache_headers(self) -> None:
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
 
     def require_auth(self) -> bool:
         if not self.server.auth_enabled:
@@ -495,6 +511,146 @@ def write_data_yaml(project_dir: Path, class_name: str) -> None:
         f"  0: {class_name}\n"
     )
     (project_dir / "data.yaml").write_text(content, encoding="utf-8")
+
+
+def build_dashboard_stats(folder_value: str, project_dir_value: str) -> dict[str, object]:
+    folder = resolve_user_path(folder_value)
+    project_dir = resolve_user_path(project_dir_value)
+    return {
+        "generated_at": datetime.now().astimezone().isoformat(),
+        "folder": str(folder),
+        "project_dir": str(project_dir),
+        "raw": raw_data_stats(folder),
+        "annotations": annotation_stats(project_dir),
+    }
+
+
+def raw_data_stats(folder: Path) -> dict[str, object]:
+    stats: dict[str, object] = {
+        "exists": folder.exists() and folder.is_dir(),
+        "files": 0,
+        "videos": 0,
+        "images": 0,
+    }
+    if not stats["exists"]:
+        return stats
+
+    files = videos = images = 0
+    for path in folder.rglob("*"):
+        if not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+        if suffix in VIDEO_EXTENSIONS:
+            files += 1
+            videos += 1
+        elif suffix in IMAGE_EXTENSIONS:
+            files += 1
+            images += 1
+
+    stats.update({"files": files, "videos": videos, "images": images})
+    return stats
+
+
+def annotation_stats(project_dir: Path) -> dict[str, object]:
+    split_stats = {split: annotation_split_stats(project_dir, split) for split in ("train", "val")}
+    total = {
+        key: sum(int(split_stats[split][key]) for split in split_stats)
+        for key in ("total", "positive", "negative", "boxes", "unlabeled")
+    }
+    return {
+        "exists": project_dir.exists() and project_dir.is_dir(),
+        "total": total,
+        "splits": split_stats,
+        "sources": source_frame_stats(project_dir / "manifest.csv"),
+    }
+
+
+def annotation_split_stats(project_dir: Path, split: str) -> dict[str, int]:
+    image_dir = project_dir / "images" / split
+    label_dir = project_dir / "labels" / split
+    image_stems = {
+        path.stem
+        for path in image_dir.rglob("*")
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+    }
+    label_paths = [path for path in label_dir.rglob("*.txt") if path.is_file()]
+    label_stems = {path.stem for path in label_paths}
+
+    positive = 0
+    negative = 0
+    boxes = 0
+    for label_path in label_paths:
+        label_boxes = count_yolo_boxes(label_path)
+        boxes += label_boxes
+        if label_boxes > 0:
+            positive += 1
+        else:
+            negative += 1
+
+    sample_stems = image_stems | label_stems
+    return {
+        "total": len(sample_stems),
+        "positive": positive,
+        "negative": negative,
+        "boxes": boxes,
+        "unlabeled": len(image_stems - label_stems),
+    }
+
+
+def count_yolo_boxes(label_path: Path) -> int:
+    try:
+        text = label_path.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+    return sum(1 for line in text.splitlines() if line.strip())
+
+
+def source_frame_stats(manifest_path: Path) -> list[dict[str, object]]:
+    if not manifest_path.exists():
+        return []
+
+    sources: dict[str, dict[str, object]] = {}
+    try:
+        with manifest_path.open("r", encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+    except OSError:
+        return []
+
+    for row in rows:
+        source_path = row.get("source_media", "")
+        source_name = Path(source_path).name or "unknown"
+        split = row.get("split") if row.get("split") in {"train", "val"} else "unknown"
+        box_count = parse_int(row.get("box_count"))
+        source = sources.setdefault(
+            source_name,
+            {
+                "source": source_name,
+                "media_kind": row.get("media_kind") or media_kind_for_path(Path(source_name)),
+                "frames": 0,
+                "train": 0,
+                "val": 0,
+                "positive": 0,
+                "negative": 0,
+                "boxes": 0,
+            },
+        )
+        source["frames"] = int(source["frames"]) + 1
+        if split in {"train", "val"}:
+            source[split] = int(source[split]) + 1
+        if box_count > 0:
+            source["positive"] = int(source["positive"]) + 1
+        else:
+            source["negative"] = int(source["negative"]) + 1
+        source["boxes"] = int(source["boxes"]) + box_count
+
+    return sorted(sources.values(), key=lambda item: (-int(item["frames"]), str(item["source"]).lower()))
+
+
+def parse_int(value: object) -> int:
+    try:
+        return int(float(str(value or 0)))
+    except ValueError:
+        return 0
 
 
 def upsert_manifest(path: Path, row: dict[str, str]) -> None:

@@ -68,6 +68,63 @@
             <canvas id="annotationCanvas"></canvas>
           </div>
         </section>
+
+        <aside class="statsPanel inspectorPanel">
+          <div class="statsTopline">
+            <span id="statsUpdatedAt">Stats not loaded</span>
+            <button id="refreshStatsButton" type="button">Refresh</button>
+          </div>
+          <div class="statsSection">
+            <div class="statsTitle">Raw data</div>
+            <div class="statTiles">
+              <div class="statTile">
+                <span id="rawFileCount" class="statValue">0</span>
+                <span class="statLabel">files</span>
+              </div>
+              <div class="statTile">
+                <span id="rawVideoCount" class="statValue">0</span>
+                <span class="statLabel">video</span>
+              </div>
+              <div class="statTile">
+                <span id="rawImageCount" class="statValue">0</span>
+                <span class="statLabel">images</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="statsSection">
+            <div class="statsTitle">Annotations</div>
+            <table class="statsTable">
+              <thead>
+                <tr>
+                  <th>Split</th>
+                  <th>Total</th>
+                  <th>Positive</th>
+                  <th>Negative</th>
+                </tr>
+              </thead>
+              <tbody id="annotationStatsRows"></tbody>
+            </table>
+          </div>
+
+          <details class="statsSection statsDetails" open>
+            <summary>Source video frames</summary>
+            <div class="statsTableWrap">
+              <table class="statsTable sourceStatsTable">
+                <thead>
+                  <tr>
+                    <th>Source video</th>
+                    <th>Frames</th>
+                    <th>Positive</th>
+                    <th>Negative</th>
+                    <th>Boxes</th>
+                  </tr>
+                </thead>
+                <tbody id="sourceStatsRows"></tbody>
+              </table>
+            </div>
+          </details>
+        </aside>
       </main>
     </div>
 

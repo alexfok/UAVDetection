@@ -15,11 +15,17 @@
   box-sizing: border-box;
 }
 
+html,
+body {
+  height: 100%;
+}
+
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow: hidden;
 }
 
 button,
@@ -66,14 +72,16 @@ label {
 }
 
 .app {
-  min-height: 100vh;
+  height: 100vh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .topbar {
   display: flex;
   align-items: end;
+  flex-wrap: wrap;
   gap: 10px;
   padding: 12px;
   border-bottom: 1px solid var(--line);
@@ -82,6 +90,7 @@ label {
 
 .field.grow {
   flex: 1 1 280px;
+  min-width: 220px;
 }
 
 .field.small {
@@ -92,7 +101,7 @@ label {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(260px, 340px) 1fr;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr) minmax(300px, 360px);
 }
 
 .mediaPanel {
@@ -101,6 +110,7 @@ label {
   background: #151719;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .panelHeader {
@@ -117,8 +127,159 @@ label {
 }
 
 .mediaList {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
   padding: 6px;
+  scrollbar-gutter: stable;
+}
+
+.statsPanel {
+  min-height: 0;
+  background: #151719;
+  border-left: 1px solid var(--line);
+  padding: 10px;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+.inspectorPanel {
+  display: flex;
+  flex-direction: column;
+}
+
+.statsTopline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
+.statsTopline button {
+  height: 28px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+
+.statsTopline button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.statsSection + .statsSection {
+  margin-top: 12px;
+}
+
+.statsTitle,
+.statsDetails summary {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.statsDetails summary {
+  cursor: pointer;
+  list-style-position: outside;
+}
+
+.statTiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.statTile {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #101315;
+  padding: 7px 8px;
+  min-width: 0;
+}
+
+.statValue,
+.statLabel {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statValue {
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.statLabel {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 3px;
+}
+
+.statsTableWrap {
+  overflow-x: auto;
+}
+
+.inspectorPanel .statsDetails .statsTableWrap {
+  max-height: calc(100vh - 330px);
+  overflow: auto;
+}
+
+.statsTable {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--text);
+  font-size: 12px;
+  table-layout: fixed;
+}
+
+.statsTable th,
+.statsTable td {
+  border-bottom: 1px solid #282d31;
+  padding: 5px 4px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.statsTable thead th {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.statsDetails thead th {
+  position: sticky;
+  top: 0;
+  background: #151719;
+}
+
+.statsTable th:first-child,
+.statsTable td:first-child {
+  text-align: left;
+}
+
+.sourceStatsTable {
+  min-width: 330px;
+}
+
+.sourceStatsTable th:first-child {
+  width: 42%;
+}
+
+.sourceName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.statsTable .emptyCell {
+  color: var(--muted);
+  text-align: left;
 }
 
 .mediaItem {
@@ -154,6 +315,7 @@ label {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .stageToolbar {
@@ -189,6 +351,7 @@ label {
   overflow: auto;
   display: block;
   padding: 12px;
+  scrollbar-gutter: stable;
 }
 
 #videoPlayer,
@@ -209,9 +372,22 @@ label {
 #annotationCanvas {
   display: none;
   cursor: crosshair;
+  max-width: none;
+  max-height: none;
+  touch-action: none;
 }
 
 @media (max-width: 860px) {
+  body {
+    overflow: auto;
+  }
+
+  .app {
+    min-height: 100vh;
+    height: auto;
+    overflow: visible;
+  }
+
   .topbar {
     align-items: stretch;
     flex-direction: column;
@@ -222,12 +398,42 @@ label {
   }
 
   .workspace {
-    grid-template-columns: 1fr;
-    grid-template-rows: 220px 1fr;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
 
   .mediaPanel {
+    flex: 0 0 32vh;
+    min-height: 180px;
+    max-height: 260px;
     border-right: 0;
     border-bottom: 1px solid var(--line);
+  }
+
+  .stage {
+    min-height: 58vh;
+    overflow: visible;
+  }
+
+  .viewer {
+    max-height: 62vh;
+  }
+
+  .statsPanel {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+    overflow: visible;
+  }
+
+  .inspectorPanel .statsDetails .statsTableWrap {
+    max-height: 240px;
+  }
+
+  #videoPlayer,
+  #imagePreview,
+  #annotationCanvas {
+    max-width: 100%;
+    max-height: 60vh;
   }
 }

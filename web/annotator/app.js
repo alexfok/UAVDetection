@@ -22,6 +22,13 @@ const els = {
   kindFilter: document.getElementById("kindFilter"),
   mediaCount: document.getElementById("mediaCount"),
   mediaList: document.getElementById("mediaList"),
+  rawFileCount: document.getElementById("rawFileCount"),
+  rawVideoCount: document.getElementById("rawVideoCount"),
+  rawImageCount: document.getElementById("rawImageCount"),
+  annotationStatsRows: document.getElementById("annotationStatsRows"),
+  sourceStatsRows: document.getElementById("sourceStatsRows"),
+  statsUpdatedAt: document.getElementById("statsUpdatedAt"),
+  refreshStatsButton: document.getElementById("refreshStatsButton"),
   video: document.getElementById("videoPlayer"),
   image: document.getElementById("imagePreview"),
   canvas: document.getElementById("annotationCanvas"),
@@ -57,6 +64,9 @@ async function init() {
 
 function bindEvents() {
   els.scanButton.addEventListener("click", scanFolder);
+  els.folderInput.addEventListener("change", refreshStats);
+  els.projectInput.addEventListener("change", refreshStats);
+  els.refreshStatsButton.addEventListener("click", refreshStats);
   els.kindFilter.addEventListener("change", renderMediaList);
   els.captureButton.addEventListener("click", captureCurrentFrame);
   els.videoButton.addEventListener("click", showVideo);
@@ -97,6 +107,7 @@ async function scanFolder() {
   state.currentIndex = -1;
   state.current = null;
   renderMediaList();
+  await refreshStats();
   if (state.filtered.length) {
     selectMedia(0);
   } else {
@@ -252,10 +263,12 @@ function draw() {
 }
 
 function drawBox(box, color) {
-  const x = box.x1 * state.scale;
-  const y = box.y1 * state.scale;
-  const w = (box.x2 - box.x1) * state.scale;
-  const h = (box.y2 - box.y1) * state.scale;
+  const scaleX = els.canvas.width / state.naturalWidth;
+  const scaleY = els.canvas.height / state.naturalHeight;
+  const x = box.x1 * scaleX;
+  const y = box.y1 * scaleY;
+  const w = (box.x2 - box.x1) * scaleX;
+  const h = (box.y2 - box.y1) * scaleY;
   ctx.strokeStyle = color;
   ctx.lineWidth = 2;
   ctx.strokeRect(x, y, w, h);
@@ -266,6 +279,8 @@ function drawBox(box, color) {
 
 function onPointerDown(event) {
   if (!state.naturalWidth) return;
+  event.preventDefault();
+  els.canvas.setPointerCapture(event.pointerId);
   state.drawing = true;
   state.start = eventToImagePoint(event);
   state.cursor = state.start;
@@ -273,12 +288,14 @@ function onPointerDown(event) {
 
 function onPointerMove(event) {
   if (!state.drawing) return;
+  event.preventDefault();
   state.cursor = eventToImagePoint(event);
   draw();
 }
 
 function onPointerUp(event) {
   if (!state.drawing || !state.start) return;
+  event.preventDefault();
   state.cursor = eventToImagePoint(event);
   const box = normaliseBox({ x1: state.start.x, y1: state.start.y, x2: state.cursor.x, y2: state.cursor.y });
   if (box.x2 - box.x1 > 3 && box.y2 - box.y1 > 3) {
@@ -287,13 +304,18 @@ function onPointerUp(event) {
   state.drawing = false;
   state.start = null;
   state.cursor = null;
+  if (els.canvas.hasPointerCapture(event.pointerId)) {
+    els.canvas.releasePointerCapture(event.pointerId);
+  }
   draw();
 }
 
 function eventToImagePoint(event) {
   const rect = els.canvas.getBoundingClientRect();
-  const x = clamp(((event.clientX - rect.left) / rect.width) * state.naturalWidth, 0, state.naturalWidth - 1);
-  const y = clamp(((event.clientY - rect.top) / rect.height) * state.naturalHeight, 0, state.naturalHeight - 1);
+  const canvasX = (event.clientX - rect.left) * (els.canvas.width / rect.width);
+  const canvasY = (event.clientY - rect.top) * (els.canvas.height / rect.height);
+  const x = clamp(canvasX * (state.naturalWidth / els.canvas.width), 0, state.naturalWidth - 1);
+  const y = clamp(canvasY * (state.naturalHeight / els.canvas.height), 0, state.naturalHeight - 1);
   return { x, y };
 }
 
@@ -321,6 +343,7 @@ async function saveAnnotation(negative) {
     return;
   }
   setStatus(`Saved ${result.image_id} (${result.box_count} boxes)`);
+  await refreshStats();
 }
 
 function onKeyDown(event) {
@@ -347,6 +370,64 @@ async function postJson(url, payload) {
     body: JSON.stringify(payload),
   });
   return response.json();
+}
+
+async function refreshStats() {
+  try {
+    els.refreshStatsButton.disabled = true;
+    const stats = await postJson("/api/stats", {
+      folder: els.folderInput.value,
+      project_dir: els.projectInput.value,
+    });
+    renderStats(stats);
+  } catch (_error) {
+    renderStats(null);
+  } finally {
+    els.refreshStatsButton.disabled = false;
+  }
+}
+
+function renderStats(stats) {
+  const raw = stats && stats.raw ? stats.raw : {};
+  els.statsUpdatedAt.textContent = stats && stats.generated_at
+    ? `Updated ${formatClock(stats.generated_at)}`
+    : "Stats unavailable";
+  els.rawFileCount.textContent = formatInteger(raw.files);
+  els.rawVideoCount.textContent = formatInteger(raw.videos);
+  els.rawImageCount.textContent = formatInteger(raw.images);
+
+  const annotationStats = stats && stats.annotations ? stats.annotations : {};
+  const splits = annotationStats.splits || {};
+  const rows = ["train", "val"].map((split) => annotationSplitRow(split, splits[split] || {}));
+  els.annotationStatsRows.innerHTML = rows.join("");
+
+  const sources = annotationStats.sources || [];
+  els.sourceStatsRows.innerHTML = sources.length
+    ? sources.map(sourceStatsRow).join("")
+    : `<tr><td colspan="5" class="emptyCell">No saved annotations</td></tr>`;
+}
+
+function annotationSplitRow(split, stats) {
+  return `
+    <tr>
+      <th>${escapeHtml(split)}</th>
+      <td>${formatInteger(stats.total)}</td>
+      <td>${formatInteger(stats.positive)}</td>
+      <td>${formatInteger(stats.negative)}</td>
+    </tr>
+  `;
+}
+
+function sourceStatsRow(source) {
+  return `
+    <tr>
+      <th class="sourceName" title="${escapeHtml(source.source)}">${escapeHtml(source.source)}</th>
+      <td>${formatInteger(source.frames)}</td>
+      <td>${formatInteger(source.positive)}</td>
+      <td>${formatInteger(source.negative)}</td>
+      <td>${formatInteger(source.boxes)}</td>
+    </tr>
+  `;
 }
 
 function mediaUrl(path) {
@@ -384,6 +465,17 @@ function formatBytes(bytes) {
     unit += 1;
   }
   return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function formatInteger(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? number.toLocaleString() : "0";
+}
+
+function formatClock(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "now";
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 function formatTime(seconds) {
