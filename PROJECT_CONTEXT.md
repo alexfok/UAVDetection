@@ -2,15 +2,42 @@
 
 Last updated: 2026-05-26
 
-This file is a handoff note for continuing the project on another machine, such as a MacBook Pro or NVIDIA Jetson.
+This is a shareable handoff for human associates and AI coding agents. It summarizes what exists, what was measured, where the artifacts live, and what to do next.
 
-## Repository
+## Executive Summary
 
-- GitHub: `https://github.com/alexfok/UAVDetection.git`
-- Main branch: `main`
-- Code baseline before datastore work: `3acb4d8 Improve annotation dashboard layout`
+The project is a local/offline UAV detection proof of concept. It currently supports:
 
-Project deployment on a new machine is two steps: clone the code, then download the shared data store.
+- live YOLO detection from webcam, video file, or RTSP source
+- batch assessment of media folders into `good`, `neutral`, `bad`, and `unreadable`
+- annotated output videos/images with bounding boxes
+- manual web annotation into YOLO train/val datasets
+- local data-store sync to Google Drive for multi-machine handoff
+- YOLOv8n fine-tuning on the current manually annotated drone dataset
+
+Current best project model:
+
+```text
+data_store/models/trained/yolov8n_drone_best.pt
+```
+
+This model is a single-class `drone` detector trained from the current annotation dataset. It improves the number of files marked as drone-positive versus the COCO proxy baseline, but the result is not yet a ground-truth accuracy claim. The next priority is visual review and more annotation, especially false positives and false negatives.
+
+## Repository And Data Store
+
+GitHub repository:
+
+```text
+https://github.com/alexfok/UAVDetection.git
+```
+
+Current code checkpoint:
+
+```text
+b6bff8d Fix trained detector paths and labels
+```
+
+Deployment is intentionally two-step:
 
 ```bash
 git clone https://github.com/alexfok/UAVDetection.git
@@ -18,123 +45,228 @@ cd UAVDetection
 python3 scripts/datastore_sync.py sync-down --yes
 ```
 
-The data-store download expects rclone to have an authenticated `uavdrive:` remote rooted at the project Google Drive folder. If Google Drive Desktop is mounted instead, use `python3 scripts/datastore_sync.py sync-down --yes --backend local --local-remote-path <mounted-folder>`.
-
-## Current Goal
-
-Build a local/offline drone detection PoC:
-
-- ingest local video, webcam, or RTSP stream
-- run YOLO detection
-- track/persist detections over time
-- show a local visual alert
-- collect manual annotations for a better drone-specific YOLOv8n fine-tune
-- deploy/test inference on Jetson later
-
-## Important Local Artifacts
-
-The repository intentionally ignores large/generated/local artifacts:
-
-- `data_store/` contents, except its README/gitkeep
-- `videos/`
-- `reports/`
-- `annotations/`
-- `datasets/`
-- `models/`
-- `runs/`
-- `*.pt`, `*.onnx`, `*.engine`
-
-This means a fresh clone has the code and docs, but not local videos, generated reports, trained weights, or annotation images/labels until the data-store download step is run.
-
-The canonical local data layout is now:
-
-```text
-data_store/
-  raw_data/
-  detection_results/
-  datasets/
-  models/
-  system_config/
-  stats/
-  backups/
-```
-
-Initialize/repair and check it with:
-
-```bash
-python3 scripts/datastore_sync.py init --migrate-legacy
-python3 scripts/datastore_sync.py stats
-python3 scripts/datastore_sync.py doctor
-```
-
-Legacy paths such as `videos/Roni/raw_data`, `reports`, `annotations/web_drone_v1`, and `certs` are compatibility links after migration.
-
-Google Drive data-store sync target:
+The second step expects an authenticated rclone remote named `uavdrive:` rooted at this Google Drive folder:
 
 ```text
 https://drive.google.com/drive/u/0/folders/16qqTwiknaYpYArNKG_r-JaA7dUA816w9
 ```
 
-For rclone, configure a remote rooted at that folder, then use `scripts/datastore_sync.py backup`, `sync-up`, `sync-down`, or later `bisync`.
+The data store was synced up after the latest trained-model detection run. A final dry-run on 2026-05-26 showed `0 B` remaining to transfer.
 
-## Setup On Mac
+## Data Layout
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+Large/generated artifacts are intentionally not tracked in Git. They live in `data_store/` and sync separately.
+
+```text
+data_store/
+  raw_data/              # source media, currently data_store/raw_data/Roni
+  detection_results/     # assessment runs, annotated media, comparison reports
+  datasets/              # YOLO train/val datasets
+  models/                # base, external, and trained weights
+  system_config/         # local certs/config/users; do not publish secrets
+  stats/                 # generated dataset/raw-data summaries
+  backups/               # optional snapshots
 ```
 
-Quick syntax check:
+Current raw data stats:
 
-```bash
-PYTHONPYCACHEPREFIX=/private/tmp/uav_pycache python3 -m py_compile app/*.py scripts/*.py
+```text
+data_store/raw_data/Roni
+109 files total
+20 videos
+89 images
 ```
 
-## Setup On Jetson
+Current annotation datasets:
 
-First identify the Jetson model:
+```text
+data_store/datasets/web_drone_v1
+  train: 254 total, 223 positive, 31 negative, 237 boxes
+  val:   0 total
 
-```bash
-cat /proc/device-tree/model
-cat /etc/nv_tegra_release
+data_store/datasets/web_drone_v1_trainval_20260526_130000
+  train: 203 total, 178 positive, 25 negative, 190 boxes
+  val:   51 total, 45 positive, 6 negative, 47 boxes
 ```
 
-Recommended initial Jetson role:
+`web_drone_v1_trainval_20260526_130000` is the train/val snapshot used for the latest training run.
 
-- run inference and field tests
-- benchmark RTSP/local video FPS
-- export/test TensorRT engines
+## Model Inventory
 
-Training on Jetson is possible on stronger devices, but usually slower and less convenient than a desktop/cloud GPU. Treat Jetson as the deployment target unless the dataset is tiny or you only need a smoke test.
+```text
+data_store/models/base/yolov8n.pt
+  General COCO YOLOv8n baseline. COCO has no real drone class.
 
-## Main App
+data_store/models/external/doguilmak_drone_yolo11x_best.pt
+  External one-class drone YOLOv11x checkpoint from Hugging Face.
 
-Run live detection:
-
-```bash
-python -m app.main --source 0
-python -m app.main --source videos/test.mp4
-python -m app.main --source "rtsp://user:password@camera-ip:554/stream1"
+data_store/models/trained/yolov8n_drone_best.pt
+  Current project-trained one-class drone YOLOv8n checkpoint.
 ```
 
-Config:
+Label consolidation is implemented in the code path:
 
-```bash
-configs/config.yaml
+```text
+airplane -> drone
+kite -> drone
 ```
 
-Current label consolidation:
+As of commit `b6bff8d`, saved annotated media also uses the consolidated display label. Older annotated media generated before that fix may still show raw `kite` or `airplane` overlays.
 
-- `airplane -> drone`
-- `kite -> drone`
+## Latest Training Run
 
-This lets the COCO `data_store/models/base/yolov8n.pt` proxy detections display and score as `drone` while a future single-class drone model can also use the same `drone` target.
+Training command summary:
 
-## Web Annotation UI
+```bash
+YOLO_CONFIG_DIR=/private/tmp/ultralytics MPLCONFIGDIR=/private/tmp/matplotlib \
+.venv/bin/python scripts/train_yolov8n_drone.py \
+  --data data_store/datasets/web_drone_v1_trainval_20260526_130000/data.yaml \
+  --model data_store/models/base/yolov8n.pt \
+  --epochs 25 \
+  --imgsz 640 \
+  --batch 8 \
+  --device cpu \
+  --workers 0 \
+  --patience 8 \
+  --project data_store/models/trained/runs \
+  --name yolov8n_drone_web_drone_v1_20260526_130000 \
+  --output-model data_store/models/trained/yolov8n_drone_best.pt
+```
 
-Start server:
+Training artifacts:
+
+```text
+data_store/models/trained/yolov8n_drone_best.pt
+data_store/models/trained/runs/yolov8n_drone_web_drone_v1_20260526_130000/
+```
+
+Final validation snapshot from epoch 25:
+
+```text
+precision: 0.640
+recall:    0.660
+mAP50:     0.546
+mAP50-95:  0.194
+```
+
+Interpretation: useful first fine-tune, but still early. The validation set is small and derived from the same current annotation effort.
+
+## Detection Results
+
+### Baseline: YOLOv8n COCO Proxy
+
+Run:
+
+```text
+data_store/detection_results/roni_raw_data_detection_assessment_20260526_122421/
+```
+
+Model:
+
+```text
+data_store/models/base/yolov8n.pt
+```
+
+Elapsed:
+
+```text
+18m 16s on CPU
+```
+
+Results:
+
+| Kind | Total | Good | Neutral | Bad | Unreadable |
+|---|---:|---:|---:|---:|---:|
+| video | 20 | 8 | 12 | 0 | 0 |
+| image | 89 | 7 | 10 | 72 | 0 |
+
+Notes:
+
+- `Good` is driven by proxy labels consolidated to `drone`, mainly COCO `airplane` and `kite`.
+- The model also detects many non-drone objects, so `neutral` is meaningful here.
+
+### Candidate: Trained YOLOv8n Drone
+
+Run:
+
+```text
+data_store/detection_results/roni_raw_data_yolov8n_drone_trained_20260526_140419/
+```
+
+Model:
+
+```text
+data_store/models/trained/yolov8n_drone_best.pt
+```
+
+Elapsed:
+
+```text
+28m 6s on CPU
+```
+
+Results:
+
+| Kind | Total | Good | Neutral | Bad | Unreadable |
+|---|---:|---:|---:|---:|---:|
+| video | 20 | 18 | 0 | 2 | 0 |
+| image | 89 | 29 | 0 | 60 | 0 |
+
+Notes:
+
+- This is a single-class detector, so it reports `drone` only.
+- New assessment labels were verified clean: only `drone`, no `kite` or `airplane`.
+- `Neutral` is usually not meaningful for one-class models because they do not detect non-drone objects.
+
+### Comparison Report
+
+Primary comparison artifacts:
+
+```text
+data_store/detection_results/model_comparison_yolov8n_coco_vs_trained_drone_20260526.md
+data_store/detection_results/model_comparison_yolov8n_coco_vs_trained_drone_20260526.pdf
+```
+
+Headline comparison:
+
+```text
+Common files: 109
+Status changes: 40
+Candidate newly marks Good: 34
+Candidate misses baseline Good: 2
+```
+
+Candidate misses baseline good:
+
+```text
+IMG_0969.MOV
+Screenshot 2026-05-19 191110.png
+```
+
+Important caveat:
+
+The comparison is model-behavior triage, not final accuracy measurement. There is no fully reviewed ground-truth test set yet, so the `good/bad` changes must be visually reviewed.
+
+## Older Comparative Result: YOLOv8n vs YOLO11x
+
+Earlier full CPU comparison against the external `doguilmak/Drone-Detection-YOLOv11x` model found:
+
+```text
+YOLOv8n COCO proxy full run: 18m 44s
+YOLO11x drone full run:      2h 59m 54s
+```
+
+YOLO11x fired many drone positives, but visual inspection suggested too many false alerts. Because it is much slower on CPU and likely over-alerting for this dataset, the current direction is improving YOLOv8n with local annotation.
+
+Related report:
+
+```text
+data_store/detection_results/model_comparison_yolov8n_vs_drone_yolo11x_full_20260521_121242/comparison.md
+```
+
+## Annotation Server
+
+Start local/LAN annotation UI:
 
 ```bash
 export ANNOTATION_SERVER_PASSWORD='choose-a-strong-password'
@@ -151,165 +283,116 @@ Open locally:
 http://127.0.0.1:8765
 ```
 
-Open from another computer on the LAN:
+For HTTPS, use the local cert/key under `data_store/system_config/certs/` or create a new self-signed pair. Do not share passwords in this document; use local environment variables or system config for actual credentials.
 
-```text
-http://<server-ip>:8765
-```
+Annotation workflow:
 
-The default username is `admin`. The password is taken from `ANNOTATION_SERVER_PASSWORD`, or generated for one server run if the env var is absent.
+1. Select media folder.
+2. Choose a video/image.
+3. For video, play or seek to a useful moment and click `Capture`.
+4. Draw drone boxes.
+5. Use `Save Boxes` for positives.
+6. Use `Save Negative` for reviewed frames/images with no drone.
 
-For HTTPS, generate a self-signed cert and start with `--certfile` and `--keyfile`:
+## Common Commands
 
-```bash
-mkdir -p data_store/system_config/certs
-openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout data_store/system_config/certs/annotation.key \
-  -out data_store/system_config/certs/annotation.crt \
-  -days 30 \
-  -subj "/CN=drone-annotator"
-
-export ANNOTATION_SERVER_PASSWORD='choose-a-strong-password'
-python3 scripts/annotation_server.py \
-  --host 0.0.0.0 \
-  --port 8765 \
-  --certfile data_store/system_config/certs/annotation.crt \
-  --keyfile data_store/system_config/certs/annotation.key \
-  --default-folder data_store/raw_data/Roni \
-  --project-dir data_store/datasets/web_drone_v1
-```
-
-Workflow:
-
-- select a local media folder
-- choose a video or image
-- for video, play/pause/seek, then `Capture`
-- draw drone boxes
-- `Save Boxes` for positives
-- `Save Negative` for reviewed no-drone frames
-
-Output layout:
-
-```text
-data_store/datasets/web_drone_v1/
-  data.yaml
-  manifest.csv
-  images/train/
-  images/val/
-  labels/train/
-  labels/val/
-```
-
-Current known local annotation state before this context file:
-
-- only a few manually annotated frames existed locally
-- not enough for meaningful training
-- collect more positives and negatives before real training
-
-Target before real training:
-
-- at least `50-100` positive drone frames
-- at least `50-100` negative frames
-- include multiple videos, backgrounds, sizes, distances, lighting conditions
-- include both `train` and `val` samples
-- `200+` reviewed images is a better first serious target
-
-## Training
-
-Training script:
+Refresh stats:
 
 ```bash
-scripts/train_yolov8n_drone.py
+python3 scripts/datastore_sync.py stats
 ```
 
-Smoke test only:
+Sync local data store to Google Drive:
+
+```bash
+python3 scripts/datastore_sync.py sync-up --dry-run
+python3 scripts/datastore_sync.py sync-up
+```
+
+Download data store on another machine:
+
+```bash
+python3 scripts/datastore_sync.py sync-down --yes
+```
+
+Run trained detector on current raw data:
 
 ```bash
 YOLO_CONFIG_DIR=/private/tmp/ultralytics MPLCONFIGDIR=/private/tmp/matplotlib \
-.venv/bin/python scripts/train_yolov8n_drone.py \
-  --smoke-from data_store/datasets/web_drone_v1 \
-  --project /private/tmp/uav_train_runs \
-  --name yolov8n_drone \
-  --output-model /private/tmp/yolov8n_drone_smoke_best.pt \
-  --device cpu \
-  --workers 0
-```
-
-This verifies the training pipeline only. It is not expected to improve the model.
-
-Real training later:
-
-```bash
-.venv/bin/python scripts/train_yolov8n_drone.py \
-  --data data_store/datasets/web_drone_v1/data.yaml \
-  --model data_store/models/base/yolov8n.pt \
-  --epochs 50 \
-  --imgsz 640 \
-  --batch 8 \
-  --device 0 \
-  --output-model data_store/models/trained/yolov8n_drone_best.pt
-```
-
-Use `--device cpu` if no CUDA/MPS device is available. On Apple Silicon, try `--device mps` only after verifying PyTorch MPS works in the local environment.
-
-## Assessment Scripts
-
-Batch assessment:
-
-```bash
-python scripts/assess_media.py data_store/raw_data/Roni \
+.venv/bin/python scripts/assess_media.py \
+  data_store/raw_data/Roni \
+  --model data_store/models/trained/yolov8n_drone_best.pt \
+  --target-label drone \
   --save-annotated \
-  --run-name roni_raw_data_detection_assessment \
+  --run-name roni_raw_data_yolov8n_drone_trained \
   --device cpu \
   --annotate-batch-size 16
 ```
 
-Compare assessments:
-
-```bash
-python scripts/compare_assessments.py \
-  data_store/detection_results/<baseline>/assessment.json \
-  data_store/detection_results/<candidate>/assessment.json \
-  --baseline-name yolov8n-coco-proxy \
-  --candidate-name drone-model \
-  --output data_store/detection_results/model_comparison.md
-```
-
-Export PDF:
+Compare two assessment runs:
 
 ```bash
 MPLCONFIGDIR=/private/tmp/matplotlib XDG_CACHE_HOME=/private/tmp MPLBACKEND=Agg \
-python scripts/export_assessment_pdf.py data_store/detection_results/<run-folder>
+.venv/bin/python scripts/compare_assessments.py \
+  data_store/detection_results/roni_raw_data_detection_assessment_20260526_122421/assessment.json \
+  data_store/detection_results/roni_raw_data_yolov8n_drone_trained_20260526_140419/assessment.json \
+  --baseline-name yolov8n-coco-proxy-20260526 \
+  --candidate-name yolov8n-drone-trained \
+  --output data_store/detection_results/model_comparison_yolov8n_coco_vs_trained_drone_20260526.md \
+  --pdf-output data_store/detection_results/model_comparison_yolov8n_coco_vs_trained_drone_20260526.pdf
 ```
 
-## Jetson Transfer Pattern
+## Next Steps
 
-After training elsewhere:
+1. Visually review the latest trained-model detections, especially the 34 newly-good files and the 2 baseline-good misses.
+2. Add annotations for false positives and false negatives discovered during that review.
+3. Build a more reliable validation/test split; keep a reviewed holdout set that is not used for training.
+4. Retrain YOLOv8n after adding more diverse positives and negatives.
+5. Tune confidence threshold and frame sampling for field use. Current detection used `conf=0.5`, `iou=0.45`, `imgsz=640`.
+6. Compare the retrained model against both the COCO proxy baseline and the external YOLO11x drone model.
+7. Deploy the best candidate to Jetson for RTSP/FPS testing and TensorRT export.
+8. Later, evaluate external datasets such as `lgrzybowski/seraphim-drone-detection-dataset`, excluding irrelevant Shahed-style content if needed.
+
+## Suggested Tasks For A Human Associate
+
+- Open the latest trained detection result folders and judge whether each `good` case is a true drone.
+- Start with:
+  - `IMG_0969.MOV`
+  - `IMG_0975.MOV`
+  - `Screenshot 2026-05-19 191110.png`
+  - the 34 files in the "Candidate Newly Marks Good" table of the comparison report
+- Add manual labels for missed drones.
+- Save negative samples where the trained detector fires on non-drone objects.
+- Record notes about conditions that fail: sky/clouds, wires, birds, buildings, distance, blur, motion, camera angle.
+
+## Suggested Prompt For Another AI Agent
+
+Use this if continuing the project in a new AI session:
+
+```text
+You are working in the UAVDetection repo. Read PROJECT_CONTEXT.md and README.md first. The repo code is on GitHub, while large artifacts live in data_store/ and sync through scripts/datastore_sync.py with rclone remote uavdrive:. Current trained model is data_store/models/trained/yolov8n_drone_best.pt. Latest trained detection run is data_store/detection_results/roni_raw_data_yolov8n_drone_trained_20260526_140419. Latest comparison against the YOLOv8n COCO proxy baseline is data_store/detection_results/model_comparison_yolov8n_coco_vs_trained_drone_20260526.md/pdf. Do not treat the comparison as ground-truth accuracy; use it for triage. Next task is visual review, annotation of false positives/false negatives, retraining, and Jetson deployment testing.
+```
+
+## Jetson Notes
+
+Recommended Jetson role for now:
+
+- inference benchmark
+- RTSP testing
+- TensorRT export
+- field deployment experiment
+
+Identify Jetson model:
 
 ```bash
-scp data_store/models/trained/yolov8n_drone_best.pt <user>@<jetson-ip>:~/UAVDetection/data_store/models/trained/
+cat /proc/device-tree/model
+cat /etc/nv_tegra_release
 ```
 
-Run on Jetson:
-
-```bash
-python -m app.main --model data_store/models/trained/yolov8n_drone_best.pt --source "<rtsp-or-video>"
-```
-
-Later TensorRT export on Jetson:
+TensorRT export example on Jetson:
 
 ```python
 from ultralytics import YOLO
 model = YOLO("data_store/models/trained/yolov8n_drone_best.pt")
 model.export(format="engine", half=True)
 ```
-
-## Current Next Steps
-
-1. Continue manual annotation in `data_store/datasets/web_drone_v1`.
-2. Add negative samples, not just positives.
-3. Once there are enough reviewed images, run real YOLOv8n training.
-4. Compare trained YOLOv8n against:
-   - current COCO proxy behavior
-   - existing drone YOLO11x checkpoint
-5. Deploy best candidate to Jetson for RTSP/FPS testing.
