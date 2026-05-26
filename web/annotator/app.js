@@ -12,6 +12,7 @@ const state = {
   scale: 1,
   frameTime: null,
   baseCanvas: document.createElement("canvas"),
+  sourceStatsByName: new Map(),
 };
 
 const els = {
@@ -26,7 +27,6 @@ const els = {
   rawVideoCount: document.getElementById("rawVideoCount"),
   rawImageCount: document.getElementById("rawImageCount"),
   annotationStatsRows: document.getElementById("annotationStatsRows"),
-  sourceStatsRows: document.getElementById("sourceStatsRows"),
   statsUpdatedAt: document.getElementById("statsUpdatedAt"),
   refreshStatsButton: document.getElementById("refreshStatsButton"),
   video: document.getElementById("videoPlayer"),
@@ -122,12 +122,16 @@ function renderMediaList() {
   els.mediaList.innerHTML = "";
 
   state.filtered.forEach((item, index) => {
+    const stats = sourceStatsFor(item);
     const button = document.createElement("button");
     button.className = "mediaItem";
     if (state.current && state.current.path === item.path) button.classList.add("active");
     button.innerHTML = `
-      <span class="mediaName">${escapeHtml(item.name)}</span>
-      <span class="mediaMeta">${item.kind} · ${formatBytes(item.size)}</span>
+      <span class="mediaIdentity">
+        <span class="mediaName">${escapeHtml(item.name)}</span>
+        <span class="mediaMeta">${item.kind} · ${formatBytes(item.size)}</span>
+      </span>
+      ${mediaStatsMarkup(stats)}
     `;
     button.addEventListener("click", () => selectMedia(index));
     els.mediaList.appendChild(button);
@@ -402,9 +406,8 @@ function renderStats(stats) {
   els.annotationStatsRows.innerHTML = rows.join("");
 
   const sources = annotationStats.sources || [];
-  els.sourceStatsRows.innerHTML = sources.length
-    ? sources.map(sourceStatsRow).join("")
-    : `<tr><td colspan="5" class="emptyCell">No saved annotations</td></tr>`;
+  state.sourceStatsByName = sourceStatsMap(sources);
+  renderMediaList();
 }
 
 function annotationSplitRow(split, stats) {
@@ -418,16 +421,46 @@ function annotationSplitRow(split, stats) {
   `;
 }
 
-function sourceStatsRow(source) {
+function sourceStatsMap(sources) {
+  const statsByName = new Map();
+  sources.forEach((source) => {
+    const sourceName = source.source || "";
+    statsByName.set(sourceKey(sourceName), source);
+  });
+  return statsByName;
+}
+
+function sourceStatsFor(item) {
+  if (!item) return null;
+  return state.sourceStatsByName.get(sourceKey(item.name))
+    || state.sourceStatsByName.get(sourceKey(item.relative));
+}
+
+function mediaStatsMarkup(stats) {
+  if (!stats) {
+    return `<span class="mediaStats"><span class="mediaStat empty">0 annotated frames</span></span>`;
+  }
   return `
-    <tr>
-      <th class="sourceName" title="${escapeHtml(source.source)}">${escapeHtml(source.source)}</th>
-      <td>${formatInteger(source.frames)}</td>
-      <td>${formatInteger(source.positive)}</td>
-      <td>${formatInteger(source.negative)}</td>
-      <td>${formatInteger(source.boxes)}</td>
-    </tr>
+    <span class="mediaStats">
+      ${compactStat(stats.frames, "frames")}
+      ${compactStat(stats.positive, "positive")}
+      ${compactStat(stats.negative, "negative")}
+      ${compactStat(stats.boxes, "boxes")}
+    </span>
   `;
+}
+
+function compactStat(value, label) {
+  return `
+    <span class="mediaStat">
+      <strong>${formatInteger(value)}</strong>
+      <span>${escapeHtml(label)}</span>
+    </span>
+  `;
+}
+
+function sourceKey(value) {
+  return String(value || "").toLowerCase();
 }
 
 function mediaUrl(path) {

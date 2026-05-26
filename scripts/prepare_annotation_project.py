@@ -30,8 +30,8 @@ class ProjectSummary:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare a YOLO annotation project from images/videos.")
-    parser.add_argument("--media-dir", type=Path, default=Path("videos/Roni/raw_data"))
-    parser.add_argument("--output-dir", type=Path, default=Path("annotations/roni_drone_v1"))
+    parser.add_argument("--media-dir", type=Path, default=Path("data_store/raw_data/Roni"))
+    parser.add_argument("--output-dir", type=Path, default=Path("data_store/datasets/roni_drone_v1"))
     parser.add_argument("--class-name", default="drone")
     parser.add_argument("--video-frame-step", type=int, default=15)
     parser.add_argument("--max-video-frames", type=int, default=0, help="0 means no per-video cap.")
@@ -40,7 +40,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-split", type=float, default=0.2)
     parser.add_argument("--clean", action="store_true")
     parser.add_argument("--seed-proxy-labels", action="store_true")
-    parser.add_argument("--model", default="yolov8n.pt", help="Used only with --seed-proxy-labels.")
+    parser.add_argument(
+        "--model",
+        default="data_store/models/base/yolov8n.pt",
+        help="Used only with --seed-proxy-labels.",
+    )
     parser.add_argument("--source-label", action="append", default=["airplane", "kite"])
     parser.add_argument("--conf", type=float, default=0.35)
     parser.add_argument("--iou", type=float, default=0.45)
@@ -301,4 +305,3 @@ def write_metadata(
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

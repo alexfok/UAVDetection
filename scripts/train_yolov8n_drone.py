@@ -13,8 +13,8 @@ IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train or smoke-test a single-class yolov8n drone detector.")
-    parser.add_argument("--data", type=Path, default=Path("annotations/web_drone_v1/data.yaml"))
-    parser.add_argument("--model", default="yolov8n.pt")
+    parser.add_argument("--data", type=Path, default=Path("data_store/datasets/web_drone_v1/data.yaml"))
+    parser.add_argument("--model", default="data_store/models/base/yolov8n.pt")
     parser.add_argument("--epochs", type=int, default=25)
     parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--batch", type=int, default=8)
@@ -23,7 +23,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--patience", type=int, default=8)
     parser.add_argument("--project", type=Path, default=Path("runs/train"))
     parser.add_argument("--name", default="yolov8n_drone")
-    parser.add_argument("--output-model", type=Path, default=Path("models/yolov8n_drone_best.pt"))
+    parser.add_argument(
+        "--output-model",
+        type=Path,
+        default=Path("data_store/models/trained/yolov8n_drone_best.pt"),
+    )
     parser.add_argument(
         "--smoke-from",
         type=Path,
@@ -143,4 +147,3 @@ def read_class_name(data_path: Path) -> str:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

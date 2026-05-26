@@ -1,6 +1,6 @@
 # UAV Detection Project Context
 
-Last updated: 2026-05-25
+Last updated: 2026-05-26
 
 This file is a handoff note for continuing the project on another machine, such as a MacBook Pro or NVIDIA Jetson.
 
@@ -8,14 +8,17 @@ This file is a handoff note for continuing the project on another machine, such 
 
 - GitHub: `https://github.com/alexfok/UAVDetection.git`
 - Main branch: `main`
-- Code baseline immediately before this context note: `1f9cdfa Add drone annotation and training workflow`
+- Code baseline before datastore work: `3acb4d8 Improve annotation dashboard layout`
 
-Clone on a new machine:
+Project deployment on a new machine is two steps: clone the code, then download the shared data store.
 
 ```bash
 git clone https://github.com/alexfok/UAVDetection.git
 cd UAVDetection
+python3 scripts/datastore_sync.py sync-down --yes
 ```
+
+The data-store download expects rclone to have an authenticated `uavdrive:` remote rooted at the project Google Drive folder. If Google Drive Desktop is mounted instead, use `python3 scripts/datastore_sync.py sync-down --yes --backend local --local-remote-path <mounted-folder>`.
 
 ## Current Goal
 
@@ -32,6 +35,7 @@ Build a local/offline drone detection PoC:
 
 The repository intentionally ignores large/generated/local artifacts:
 
+- `data_store/` contents, except its README/gitkeep
 - `videos/`
 - `reports/`
 - `annotations/`
@@ -40,19 +44,38 @@ The repository intentionally ignores large/generated/local artifacts:
 - `runs/`
 - `*.pt`, `*.onnx`, `*.engine`
 
-This means a fresh clone has the code and docs, but not local videos, generated reports, trained weights, or annotation images/labels.
+This means a fresh clone has the code and docs, but not local videos, generated reports, trained weights, or annotation images/labels until the data-store download step is run.
 
-To continue from the exact same local data state, copy these folders manually from the old machine if needed:
+The canonical local data layout is now:
 
-```bash
-videos/Roni/raw_data/
-reports/
-annotations/web_drone_v1/
-models/
-yolov8n.pt
+```text
+data_store/
+  raw_data/
+  detection_results/
+  datasets/
+  models/
+  system_config/
+  stats/
+  backups/
 ```
 
-If you only need the code and workflow, cloning the repo is enough.
+Initialize/repair and check it with:
+
+```bash
+python3 scripts/datastore_sync.py init --migrate-legacy
+python3 scripts/datastore_sync.py stats
+python3 scripts/datastore_sync.py doctor
+```
+
+Legacy paths such as `videos/Roni/raw_data`, `reports`, `annotations/web_drone_v1`, and `certs` are compatibility links after migration.
+
+Google Drive data-store sync target:
+
+```text
+https://drive.google.com/drive/u/0/folders/16qqTwiknaYpYArNKG_r-JaA7dUA816w9
+```
+
+For rclone, configure a remote rooted at that folder, then use `scripts/datastore_sync.py backup`, `sync-up`, `sync-down`, or later `bisync`.
 
 ## Setup On Mac
 
@@ -107,7 +130,7 @@ Current label consolidation:
 - `airplane -> drone`
 - `kite -> drone`
 
-This lets the COCO `yolov8n.pt` proxy detections display and score as `drone` while a future single-class drone model can also use the same `drone` target.
+This lets the COCO `data_store/models/base/yolov8n.pt` proxy detections display and score as `drone` while a future single-class drone model can also use the same `drone` target.
 
 ## Web Annotation UI
 
@@ -118,8 +141,8 @@ export ANNOTATION_SERVER_PASSWORD='choose-a-strong-password'
 python3 scripts/annotation_server.py \
   --host 0.0.0.0 \
   --port 8765 \
-  --default-folder videos/Roni/raw_data \
-  --project-dir annotations/web_drone_v1
+  --default-folder data_store/raw_data/Roni \
+  --project-dir data_store/datasets/web_drone_v1
 ```
 
 Open locally:
@@ -139,10 +162,10 @@ The default username is `admin`. The password is taken from `ANNOTATION_SERVER_P
 For HTTPS, generate a self-signed cert and start with `--certfile` and `--keyfile`:
 
 ```bash
-mkdir -p certs
+mkdir -p data_store/system_config/certs
 openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout certs/annotation.key \
-  -out certs/annotation.crt \
+  -keyout data_store/system_config/certs/annotation.key \
+  -out data_store/system_config/certs/annotation.crt \
   -days 30 \
   -subj "/CN=drone-annotator"
 
@@ -150,10 +173,10 @@ export ANNOTATION_SERVER_PASSWORD='choose-a-strong-password'
 python3 scripts/annotation_server.py \
   --host 0.0.0.0 \
   --port 8765 \
-  --certfile certs/annotation.crt \
-  --keyfile certs/annotation.key \
-  --default-folder videos/Roni/raw_data \
-  --project-dir annotations/web_drone_v1
+  --certfile data_store/system_config/certs/annotation.crt \
+  --keyfile data_store/system_config/certs/annotation.key \
+  --default-folder data_store/raw_data/Roni \
+  --project-dir data_store/datasets/web_drone_v1
 ```
 
 Workflow:
@@ -168,7 +191,7 @@ Workflow:
 Output layout:
 
 ```text
-annotations/web_drone_v1/
+data_store/datasets/web_drone_v1/
   data.yaml
   manifest.csv
   images/train/
@@ -204,7 +227,7 @@ Smoke test only:
 ```bash
 YOLO_CONFIG_DIR=/private/tmp/ultralytics MPLCONFIGDIR=/private/tmp/matplotlib \
 .venv/bin/python scripts/train_yolov8n_drone.py \
-  --smoke-from annotations/web_drone_v1 \
+  --smoke-from data_store/datasets/web_drone_v1 \
   --project /private/tmp/uav_train_runs \
   --name yolov8n_drone \
   --output-model /private/tmp/yolov8n_drone_smoke_best.pt \
@@ -218,13 +241,13 @@ Real training later:
 
 ```bash
 .venv/bin/python scripts/train_yolov8n_drone.py \
-  --data annotations/web_drone_v1/data.yaml \
-  --model yolov8n.pt \
+  --data data_store/datasets/web_drone_v1/data.yaml \
+  --model data_store/models/base/yolov8n.pt \
   --epochs 50 \
   --imgsz 640 \
   --batch 8 \
   --device 0 \
-  --output-model models/yolov8n_drone_best.pt
+  --output-model data_store/models/trained/yolov8n_drone_best.pt
 ```
 
 Use `--device cpu` if no CUDA/MPS device is available. On Apple Silicon, try `--device mps` only after verifying PyTorch MPS works in the local environment.
@@ -234,7 +257,7 @@ Use `--device cpu` if no CUDA/MPS device is available. On Apple Silicon, try `--
 Batch assessment:
 
 ```bash
-python scripts/assess_media.py videos/Roni/raw_data \
+python scripts/assess_media.py data_store/raw_data/Roni \
   --save-annotated \
   --run-name roni_raw_data_detection_assessment \
   --device cpu \
@@ -245,18 +268,18 @@ Compare assessments:
 
 ```bash
 python scripts/compare_assessments.py \
-  reports/<baseline>/assessment.json \
-  reports/<candidate>/assessment.json \
+  data_store/detection_results/<baseline>/assessment.json \
+  data_store/detection_results/<candidate>/assessment.json \
   --baseline-name yolov8n-coco-proxy \
   --candidate-name drone-model \
-  --output reports/model_comparison.md
+  --output data_store/detection_results/model_comparison.md
 ```
 
 Export PDF:
 
 ```bash
 MPLCONFIGDIR=/private/tmp/matplotlib XDG_CACHE_HOME=/private/tmp MPLBACKEND=Agg \
-python scripts/export_assessment_pdf.py reports/<run-folder>
+python scripts/export_assessment_pdf.py data_store/detection_results/<run-folder>
 ```
 
 ## Jetson Transfer Pattern
@@ -264,26 +287,26 @@ python scripts/export_assessment_pdf.py reports/<run-folder>
 After training elsewhere:
 
 ```bash
-scp models/yolov8n_drone_best.pt <user>@<jetson-ip>:~/UAVDetection/models/
+scp data_store/models/trained/yolov8n_drone_best.pt <user>@<jetson-ip>:~/UAVDetection/data_store/models/trained/
 ```
 
 Run on Jetson:
 
 ```bash
-python -m app.main --model models/yolov8n_drone_best.pt --source "<rtsp-or-video>"
+python -m app.main --model data_store/models/trained/yolov8n_drone_best.pt --source "<rtsp-or-video>"
 ```
 
 Later TensorRT export on Jetson:
 
 ```python
 from ultralytics import YOLO
-model = YOLO("models/yolov8n_drone_best.pt")
+model = YOLO("data_store/models/trained/yolov8n_drone_best.pt")
 model.export(format="engine", half=True)
 ```
 
 ## Current Next Steps
 
-1. Continue manual annotation in `annotations/web_drone_v1`.
+1. Continue manual annotation in `data_store/datasets/web_drone_v1`.
 2. Add negative samples, not just positives.
 3. Once there are enough reviewed images, run real YOLOv8n training.
 4. Compare trained YOLOv8n against:

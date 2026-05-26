@@ -91,7 +91,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fast Drone Detection PoC")
     parser.add_argument("--config", default="configs/config.yaml", help="Path to YAML config file")
     parser.add_argument("--source", help="Override video source: mp4 path, RTSP URL, or webcam index")
-    parser.add_argument("--model", help="Override YOLO model path, e.g. yolov8n.pt")
+    parser.add_argument("--model", help="Override YOLO model path, e.g. data_store/models/base/yolov8n.pt")
     parser.add_argument("--no-window", action="store_true", help="Run without opening the OpenCV window")
     parser.add_argument("--save-output", action="store_true", help="Save annotated video output")
     parser.add_argument("--log-level", help="Override log level")

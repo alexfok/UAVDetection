@@ -2,7 +2,7 @@
 
 Standalone Python/OpenCV prototype for local UAV detection experiments from webcam, local video, RTSP streams, and offline media folders.
 
-The current baseline uses Ultralytics YOLO with general COCO weights (`yolov8n.pt`). COCO does not include true `drone`, `uav`, or `quadcopter` classes, so this project can consolidate selected proxy labels. By default, `airplane` and `kite` are displayed and scored as `drone`.
+The current baseline uses Ultralytics YOLO with general COCO weights (`data_store/models/base/yolov8n.pt`). COCO does not include true `drone`, `uav`, or `quadcopter` classes, so this project can consolidate selected proxy labels. By default, `airplane` and `kite` are displayed and scored as `drone`.
 
 ## What Is Included
 
@@ -15,6 +15,83 @@ The current baseline uses Ultralytics YOLO with general COCO weights (`yolov8n.p
 
 Raw media, generated reports, annotated videos, local model weights, and local run artifacts are intentionally ignored by Git.
 
+## Two-Step Deployment
+
+On a new machine, project deployment is intentionally split into code and data:
+
+1. Clone the Git repository:
+
+```bash
+git clone https://github.com/alexfok/UAVDetection.git
+cd UAVDetection
+```
+
+2. Download the shared data store:
+
+```bash
+python3 scripts/datastore_sync.py sync-down --yes
+```
+
+After step 2, the local `data_store/` contains raw media, annotation datasets, detection results, model weights, system config, and generated stats. The command also recreates compatibility links such as `reports`, `certs`, `videos/Roni/raw_data`, and `annotations/web_drone_v1`.
+
+Prerequisites for running the project are still needed on each machine, such as Python dependencies and an authenticated rclone remote named `uavdrive:`. If rclone is not configured yet, create the remote once:
+
+```bash
+rclone config create uavdrive drive scope drive root_folder_id 16qqTwiknaYpYArNKG_r-JaA7dUA816w9
+```
+
+If Google Drive Desktop is mounted instead of rclone, download with:
+
+```bash
+python3 scripts/datastore_sync.py sync-down --yes --backend local --local-remote-path <mounted-folder>
+```
+
+## Data Store
+
+Project data lives under the canonical local data store:
+
+```text
+data_store/
+  raw_data/              # source videos/images, e.g. data_store/raw_data/Roni/
+  detection_results/     # timestamped assessments and comparison reports
+  datasets/              # YOLO train/val annotation datasets
+  models/                # base, external, and trained model weights
+  system_config/         # local deployment config, certs, users/passwords
+  stats/                 # generated dataset/raw-data summaries
+  backups/               # optional snapshot copies
+```
+
+Initialize or repair the local layout:
+
+```bash
+python3 scripts/datastore_sync.py init --migrate-legacy
+python3 scripts/datastore_sync.py stats
+python3 scripts/datastore_sync.py doctor
+```
+
+The init command creates compatibility links for legacy paths such as `videos/Roni/raw_data`, `annotations/web_drone_v1`, `reports`, and `certs`, so older commands still resolve while new commands use `data_store/`.
+
+The configured Google Drive folder for project data sync is:
+
+```text
+https://drive.google.com/drive/u/0/folders/16qqTwiknaYpYArNKG_r-JaA7dUA816w9
+```
+
+Recommended rclone setup is to create a Drive remote rooted at that folder, named `uavdrive`, then use the sync CLI:
+
+```bash
+rclone config create uavdrive drive scope drive root_folder_id 16qqTwiknaYpYArNKG_r-JaA7dUA816w9
+
+python3 scripts/datastore_sync.py backup --dry-run
+python3 scripts/datastore_sync.py backup
+python3 scripts/datastore_sync.py sync-up --dry-run
+python3 scripts/datastore_sync.py sync-up
+python3 scripts/datastore_sync.py sync-down --dry-run
+python3 scripts/datastore_sync.py sync-down --yes
+```
+
+For simultaneous multi-person editing, use `sync-up`/`sync-down` carefully at first; true two-way sync should be tested with `python3 scripts/datastore_sync.py bisync --dry-run --yes` before enabling periodic automation.
+
 ## Setup
 
 ```bash
@@ -24,7 +101,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Ultralytics downloads `yolov8n.pt` on first use unless a model path is provided.
+Model weights are stored in `data_store/models/`. The base COCO model is expected at `data_store/models/base/yolov8n.pt`; if it is missing, Ultralytics can download `yolov8n.pt` when you explicitly pass that model name.
 
 ## Live Detection Examples
 
@@ -65,7 +142,7 @@ python scripts/assess_media.py videos/Roni/drive-download-20260519T062344Z-3-001
 Full annotated assessment with timestamped output folder:
 
 ```bash
-python scripts/assess_media.py videos/Roni/raw_data \
+python scripts/assess_media.py data_store/raw_data/Roni \
   --save-annotated \
   --run-name roni_raw_data_detection_assessment \
   --device cpu \
@@ -75,7 +152,7 @@ python scripts/assess_media.py videos/Roni/raw_data \
 Analyze every third video frame while saving annotated output:
 
 ```bash
-python scripts/assess_media.py videos/Roni/raw_data \
+python scripts/assess_media.py data_store/raw_data/Roni \
   --save-annotated \
   --run-name roni_raw_data_detection_assessment_stride3 \
   --device cpu \
@@ -91,8 +168,8 @@ export ANNOTATION_SERVER_PASSWORD='choose-a-strong-password'
 python3 scripts/annotation_server.py \
   --host 0.0.0.0 \
   --port 8765 \
-  --default-folder videos/Roni/raw_data \
-  --project-dir annotations/web_drone_v1
+  --default-folder data_store/raw_data/Roni \
+  --project-dir data_store/datasets/web_drone_v1
 ```
 
 Open:
@@ -112,10 +189,10 @@ The default username is `admin`. The password is read from `ANNOTATION_SERVER_PA
 To run with HTTPS, create a local self-signed certificate:
 
 ```bash
-mkdir -p certs
+mkdir -p data_store/system_config/certs
 openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout certs/annotation.key \
-  -out certs/annotation.crt \
+  -keyout data_store/system_config/certs/annotation.key \
+  -out data_store/system_config/certs/annotation.crt \
   -days 30 \
   -subj "/CN=drone-annotator"
 ```
@@ -127,10 +204,10 @@ export ANNOTATION_SERVER_PASSWORD='choose-a-strong-password'
 python3 scripts/annotation_server.py \
   --host 0.0.0.0 \
   --port 8765 \
-  --certfile certs/annotation.crt \
-  --keyfile certs/annotation.key \
-  --default-folder videos/Roni/raw_data \
-  --project-dir annotations/web_drone_v1
+  --certfile data_store/system_config/certs/annotation.crt \
+  --keyfile data_store/system_config/certs/annotation.key \
+  --default-folder data_store/raw_data/Roni \
+  --project-dir data_store/datasets/web_drone_v1
 ```
 
 Open:
@@ -152,7 +229,7 @@ The web UI scans a local folder for movies/images. For videos, play to the desir
 Saved annotations are written as a YOLO dataset:
 
 ```text
-annotations/web_drone_v1/
+data_store/datasets/web_drone_v1/
   data.yaml
   manifest.csv
   images/
@@ -170,7 +247,7 @@ Use this only to verify the training pipeline wiring. It creates a temporary tin
 ```bash
 YOLO_CONFIG_DIR=/private/tmp/ultralytics MPLCONFIGDIR=/private/tmp/matplotlib \
 .venv/bin/python scripts/train_yolov8n_drone.py \
-  --smoke-from annotations/web_drone_v1 \
+  --smoke-from data_store/datasets/web_drone_v1 \
   --project /private/tmp/uav_train_runs \
   --name yolov8n_drone \
   --output-model /private/tmp/yolov8n_drone_smoke_best.pt \
@@ -183,12 +260,12 @@ For real training later, first collect a reviewed train/val annotation set with 
 Run the drone-specific YOLOv11x model from Hugging Face:
 
 ```bash
-mkdir -p models
-curl -L -o models/doguilmak_drone_yolo11x_best.pt \
+mkdir -p data_store/models/external
+curl -L -o data_store/models/external/doguilmak_drone_yolo11x_best.pt \
   https://huggingface.co/doguilmak/Drone-Detection-YOLOv11x/resolve/main/weight/best.pt
 
-python scripts/assess_media.py videos/Roni/raw_data \
-  --model models/doguilmak_drone_yolo11x_best.pt \
+python scripts/assess_media.py data_store/raw_data/Roni \
+  --model data_store/models/external/doguilmak_drone_yolo11x_best.pt \
   --target-label drone \
   --conf 0.3 \
   --iou 0.5 \
@@ -201,19 +278,19 @@ Compare two completed assessment JSON files:
 
 ```bash
 python scripts/compare_assessments.py \
-  reports/roni_raw_data_detection_assessment_20260520_173524/assessment.json \
-  reports/<drone-yolo11x-run>/assessment.json \
+  data_store/detection_results/roni_raw_data_detection_assessment_20260520_173524/assessment.json \
+  data_store/detection_results/<drone-yolo11x-run>/assessment.json \
   --baseline-name yolov8n-coco-proxy \
   --candidate-name drone-yolo11x \
-  --output reports/model_comparison_yolov8n_vs_drone_yolo11x.md \
-  --pdf-output reports/model_comparison_yolov8n_vs_drone_yolo11x.pdf
+  --output data_store/detection_results/model_comparison_yolov8n_vs_drone_yolo11x.md \
+  --pdf-output data_store/detection_results/model_comparison_yolov8n_vs_drone_yolo11x.pdf
 ```
 
 Export a customer-facing PDF for a completed run:
 
 ```bash
 MPLCONFIGDIR=/private/tmp/matplotlib XDG_CACHE_HOME=/private/tmp MPLBACKEND=Agg \
-python scripts/export_assessment_pdf.py reports/roni_raw_data_detection_assessment_20260520_173524
+python scripts/export_assessment_pdf.py data_store/detection_results/roni_raw_data_detection_assessment_20260520_173524
 ```
 
 ## Media Categories
@@ -228,7 +305,7 @@ python scripts/export_assessment_pdf.py reports/roni_raw_data_detection_assessme
 Annotated assessment runs are written under a timestamped folder:
 
 ```text
-reports/<run-name>_<YYYYMMDD_HHMMSS>/
+data_store/detection_results/<run-name>_<YYYYMMDD_HHMMSS>/
   assessment.md
   assessment.json
   assessment.pdf
@@ -267,11 +344,11 @@ Why it is useful here:
 
 - It provides a true `drone` class instead of relying on COCO proxy labels such as `airplane`, `bird`, and `kite`.
 - It loads directly with Ultralytics YOLO in the current code path.
-- It can be used with `scripts/assess_media.py` by passing `--model models/doguilmak_drone_yolo11x_best.pt --target-label drone`.
+- It can be used with `scripts/assess_media.py` by passing `--model data_store/models/external/doguilmak_drone_yolo11x_best.pt --target-label drone`.
 
 Comparison caveat:
 
-- `yolov8n.pt` is a broad COCO object detector. It can produce Good, Neutral, and Bad categories because it detects many object classes.
+- `data_store/models/base/yolov8n.pt` is a broad COCO object detector. It can produce Good, Neutral, and Bad categories because it detects many object classes.
 - `doguilmak/Drone-Detection-YOLOv11x` is a single-class drone detector. It will mostly produce Good or Bad categories; Neutral is not very meaningful because the model does not detect non-drone objects.
 - Real performance comparison needs manually labeled ground truth. Without ground truth, the comparison report should be treated as triage: which files each model flags for review, where they agree, and where they disagree.
 
@@ -281,7 +358,7 @@ Edit `configs/config.yaml` for:
 
 - `video.source`: webcam index, local video path, or RTSP URL.
 - `video.frame_skip`: process one frame and skip N frames. `frame_skip: 2` analyzes every third frame.
-- `detector.model_path`: YOLO model, for example `yolov8n.pt` or `models/drone.pt`.
+- `detector.model_path`: YOLO model, for example `data_store/models/base/yolov8n.pt` or `data_store/models/trained/yolov8n_drone_best.pt`.
 - `detector.confidence_threshold`: per-frame detection threshold.
 - `detector.target_classes`: model class names to alert on.
 - `detector.label_aliases`: displayed label consolidation, currently `airplane: drone` and `kite: drone`.
@@ -306,6 +383,6 @@ scripts/extract_frames.sh videos/test.mp4 frames/test 1
 ## Next Steps
 
 - Add or train a drone-specific model with real `drone`/`uav` classes.
-- Re-run the assessment with the drone model via `--model models/drone.pt`.
+- Re-run the assessment with the drone model via `--model data_store/models/trained/yolov8n_drone_best.pt`.
 - Compare proxy-model and drone-model results across the same run folders.
 - Tune `confidence_threshold`, `image_size`, and `frame_step` for field performance.

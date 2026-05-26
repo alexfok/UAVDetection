@@ -19,8 +19,8 @@ VIDEO_EXTENSIONS = {".avi", ".m4v", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"}
 IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 DEFAULT_TARGET_LABELS = ("drone",)
 DEFAULT_LABEL_ALIASES = ("airplane=drone", "kite=drone")
-DEFAULT_OUTPUT_MD = Path("reports/roni_media_detection_assessment.md")
-DEFAULT_OUTPUT_JSON = Path("reports/roni_media_detection_assessment.json")
+DEFAULT_OUTPUT_MD = Path("data_store/detection_results/roni_media_detection_assessment.md")
+DEFAULT_OUTPUT_JSON = Path("data_store/detection_results/roni_media_detection_assessment.json")
 
 
 @dataclass
@@ -63,10 +63,19 @@ class MediaAssessment:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Categorize media by YOLO detections.")
     parser.add_argument("media_dir", type=Path, help="Directory containing videos/images to assess.")
-    parser.add_argument("--model", default="yolov8n.pt", help="Ultralytics YOLO model path/name.")
+    parser.add_argument(
+        "--model",
+        default="data_store/models/base/yolov8n.pt",
+        help="Ultralytics YOLO model path/name.",
+    )
     parser.add_argument("--output-md", type=Path, default=DEFAULT_OUTPUT_MD)
     parser.add_argument("--output-json", type=Path, default=DEFAULT_OUTPUT_JSON)
-    parser.add_argument("--run-root", type=Path, default=Path("reports"), help="Parent folder for timestamped runs.")
+    parser.add_argument(
+        "--run-root",
+        type=Path,
+        default=Path("data_store/detection_results"),
+        help="Parent folder for timestamped runs.",
+    )
     parser.add_argument("--run-name", help="Base name for timestamped run folder.")
     parser.add_argument("--save-annotated", action="store_true", help="Save annotated media into category folders.")
     parser.add_argument("--conf", type=float, default=0.5, help="YOLO confidence threshold.")

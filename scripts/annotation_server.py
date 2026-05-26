@@ -45,8 +45,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Local web annotation server for UAV/drone YOLO labels.")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--default-folder", type=Path, default=Path("videos/Roni/raw_data"))
-    parser.add_argument("--project-dir", type=Path, default=Path("annotations/web_drone_v1"))
+    parser.add_argument("--default-folder", type=Path, default=Path("data_store/raw_data/Roni"))
+    parser.add_argument("--project-dir", type=Path, default=Path("data_store/datasets/web_drone_v1"))
     parser.add_argument("--class-name", default="drone")
     parser.add_argument("--username", default="admin")
     parser.add_argument("--password", help="HTTP Basic Auth password. Prefer --password-env for shared machines.")
@@ -247,9 +247,9 @@ class AnnotationHandler(BaseHTTPRequestHandler):
             {
                 "image_id": safe_id,
                 "split": split,
-                "image_path": str(image_path),
-                "label_path": str(label_path),
-                "source_media": str(source_path),
+                "image_path": portable_path(image_path),
+                "label_path": portable_path(label_path),
+                "source_media": portable_path(source_path),
                 "media_kind": media_kind,
                 "frame_time": "" if frame_time is None else str(frame_time),
                 "image_width": str(width),
@@ -504,13 +504,20 @@ def safe_name(value: str) -> str:
 def write_data_yaml(project_dir: Path, class_name: str) -> None:
     project_dir.mkdir(parents=True, exist_ok=True)
     content = (
-        f"path: {project_dir.resolve()}\n"
+        "path: .\n"
         "train: images/train\n"
         "val: images/val\n"
         "names:\n"
         f"  0: {class_name}\n"
     )
     (project_dir / "data.yaml").write_text(content, encoding="utf-8")
+
+
+def portable_path(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(PROJECT_ROOT))
+    except ValueError:
+        return str(path)
 
 
 def build_dashboard_stats(folder_value: str, project_dir_value: str) -> dict[str, object]:

@@ -18,7 +18,7 @@ class VideoConfig:
 
 @dataclass
 class DetectorConfig:
-    model_path: str = "yolov8n.pt"
+    model_path: str = "data_store/models/base/yolov8n.pt"
     confidence_threshold: float = 0.5
     iou_threshold: float = 0.45
     image_size: int = 640
