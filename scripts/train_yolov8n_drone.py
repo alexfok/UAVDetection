@@ -39,7 +39,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    data_path = args.data
+    data_path = args.data.resolve()
+    project_dir = args.project.resolve()
+    output_model = args.output_model.resolve()
 
     if args.smoke_from:
         data_path = build_smoke_dataset(args.smoke_from, args.smoke_dir)
@@ -57,7 +59,7 @@ def main() -> int:
         "epochs": args.epochs,
         "imgsz": args.imgsz,
         "batch": args.batch,
-        "project": str(args.project),
+        "project": str(project_dir),
         "name": args.name,
         "patience": args.patience,
         "workers": args.workers,
@@ -73,9 +75,9 @@ def main() -> int:
     if not best_model.exists():
         raise RuntimeError(f"Expected trained model not found: {best_model}")
 
-    args.output_model.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(best_model, args.output_model)
-    print(f"Copied best model to {args.output_model}")
+    output_model.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(best_model, output_model)
+    print(f"Copied best model to {output_model}")
     return 0
 
 

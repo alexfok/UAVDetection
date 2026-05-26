@@ -503,7 +503,7 @@ def process_annotated_batch(
     results = model.predict(frames, **predict_args_from_args(args))
     for frame_index, yolo_result in zip(frame_indices, results):
         add_yolo_result_detections(yolo_result, frame_index, target_labels, names, detection_result)
-        annotated = yolo_result.plot()
+        annotated = plot_yolo_result(yolo_result, names)
         if writer is None:
             writer = create_video_writer(output_path, annotated, output_fps)
         writer.write(annotated)
@@ -530,7 +530,7 @@ def assess_image_with_annotation(
     yolo_results = model.predict([frame], **predict_args_from_args(args))
     if yolo_results:
         add_yolo_result_detections(yolo_results[0], 0, target_labels, names, result)
-        annotated = yolo_results[0].plot()
+        annotated = plot_yolo_result(yolo_results[0], names)
     else:
         annotated = frame
 
@@ -623,6 +623,16 @@ def predict_args_from_args(args: argparse.Namespace) -> dict[str, object]:
     if args.device:
         predict_args["device"] = args.device
     return predict_args
+
+
+def plot_yolo_result(yolo_result: object, names: dict[int, str]) -> np.ndarray:
+    original_names = getattr(yolo_result, "names", None)
+    try:
+        setattr(yolo_result, "names", names)
+        return yolo_result.plot()
+    finally:
+        if original_names is not None:
+            setattr(yolo_result, "names", original_names)
 
 
 def parse_label_aliases(values: Iterable[str] | None) -> dict[str, str]:

@@ -245,13 +245,20 @@ def normalize_datasets(data_store: Path) -> None:
 def normalize_data_yaml(dataset_dir: Path) -> None:
     class_name = read_class_name(dataset_dir / "data.yaml")
     content = (
-        "path: .\n"
+        f"path: {json.dumps(project_relative_path(dataset_dir))}\n"
         "train: images/train\n"
         "val: images/val\n"
         "names:\n"
         f"  0: {class_name}\n"
     )
     (dataset_dir / "data.yaml").write_text(content, encoding="utf-8")
+
+
+def project_relative_path(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(PROJECT_ROOT))
+    except ValueError:
+        return str(path.resolve())
 
 
 def read_class_name(data_yaml: Path) -> str:

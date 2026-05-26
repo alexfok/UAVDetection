@@ -504,7 +504,7 @@ def safe_name(value: str) -> str:
 def write_data_yaml(project_dir: Path, class_name: str) -> None:
     project_dir.mkdir(parents=True, exist_ok=True)
     content = (
-        "path: .\n"
+        f"path: {json.dumps(portable_path(project_dir))}\n"
         "train: images/train\n"
         "val: images/val\n"
         "names:\n"
