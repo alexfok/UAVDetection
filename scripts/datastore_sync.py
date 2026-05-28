@@ -577,7 +577,23 @@ def create_compat_link(link_path: Path, target: Path) -> None:
     link_path.parent.mkdir(parents=True, exist_ok=True)
     relative_target = os.path.relpath(target, start=link_path.parent)
     print(f"link {link_path} -> {relative_target}")
-    link_path.symlink_to(relative_target, target_is_directory=True)
+    try:
+        link_path.symlink_to(relative_target, target_is_directory=True)
+        return
+    except OSError as exc:
+        if os.name != "nt":
+            raise
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link_path), str(target)],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        if result.returncode != 0:
+            print(f"warning: could not create Windows junction for {link_path}: {exc}")
+            if result.stdout.strip():
+                print(result.stdout.strip())
 
 
 def doctor(data_store: Path) -> None:

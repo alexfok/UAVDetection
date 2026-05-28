@@ -8,6 +8,7 @@ from typing import Any
 @dataclass
 class VideoConfig:
     source: str = "0"
+    camera_config: str = "data_store/system_config/cameras.yaml"
     resize_width: int = 1280
     resize_height: int = 720
     frame_skip: int = 0
@@ -18,7 +19,7 @@ class VideoConfig:
 
 @dataclass
 class DetectorConfig:
-    model_path: str = "data_store/models/base/yolov8n.pt"
+    model_path: str = "data_store/models/trained/yolov8n_drone_best.pt"
     confidence_threshold: float = 0.5
     iou_threshold: float = 0.45
     image_size: int = 640
@@ -53,6 +54,7 @@ class UIConfig:
     show_window: bool = True
     fullscreen: bool = False
     draw_all_tracks: bool = True
+    draw_status_bar: bool = True
     save_output: bool = False
     output_path: str = "videos/annotated_output.mp4"
 
@@ -101,13 +103,3 @@ def load_config(path: str | Path = "configs/config.yaml") -> AppConfig:
         raise ValueError(f"Config file must contain a YAML mapping: {config_path}")
 
     return _merge_dataclass(config, data)
-
-
-def parse_video_source(source: str | int) -> str | int:
-    if isinstance(source, int):
-        return source
-
-    text = str(source).strip()
-    if text.isdigit():
-        return int(text)
-    return text

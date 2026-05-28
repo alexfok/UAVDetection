@@ -37,10 +37,11 @@ class OpenCVUI:
             color = (0, 0, 255) if track.track_id in alert_track_ids else (0, 180, 255)
             self._draw_track(output, track, color)
 
-        self._draw_status_bar(output, alert, fps, source)
+        if self.config.draw_status_bar:
+            self._draw_status_bar(output, alert, fps, source)
         return output
 
-    def show(self, frame: np.ndarray) -> UIResult:
+    def show(self, frame: np.ndarray, wait_ms: int = 1) -> UIResult:
         if not self.config.show_window:
             return UIResult()
 
@@ -55,7 +56,7 @@ class OpenCVUI:
             self._created_window = True
 
         cv2.imshow(self.config.window_name, frame)
-        key = cv2.waitKey(1) & 0xFF
+        key = cv2.waitKey(wait_ms) & 0xFF
         return UIResult(should_quit=key in {27, ord("q")})
 
     def close(self) -> None:

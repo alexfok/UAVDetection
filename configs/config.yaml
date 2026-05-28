@@ -1,6 +1,8 @@
 video:
-  # Use "0" for webcam, an RTSP URL, or a local file such as videos/test.mp4.
+  # Use "0" or "usb:0" for a local camera, "camera:<id>" for the registry below,
+  # an RTSP URL, a video file, or an image file.
   source: "0"
+  camera_config: "data_store/system_config/cameras.yaml"
   resize_width: 1280
   resize_height: 720
   frame_skip: 0
@@ -9,14 +11,14 @@ video:
   buffer_size: 1
 
 detector:
-  model_path: "data_store/models/base/yolov8n.pt"
+  model_path: "data_store/models/trained/yolov8n_drone_best.pt"
   confidence_threshold: 0.5
   iou_threshold: 0.45
   image_size: 640
   # Empty string lets Ultralytics choose. Examples: "cpu", "mps" on Apple Silicon, "0" for CUDA.
   device: ""
+  # With the trained model, "drone" resolves directly to the model's drone class.
   # With COCO yolov8n, "drone" resolves through label_aliases to airplane/kite.
-  # With a single-class trained drone model, it resolves directly to the model's drone class.
   target_classes:
     - drone
   label_aliases:

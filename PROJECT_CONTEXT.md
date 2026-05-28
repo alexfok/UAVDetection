@@ -285,6 +285,51 @@ http://127.0.0.1:8765
 
 For HTTPS, use the local cert/key under `data_store/system_config/certs/` or create a new self-signed pair. Do not share passwords in this document; use local environment variables or system config for actual credentials.
 
+## Offline USB Deployment
+
+Prepare a no-Internet deployment bundle from the repo root:
+
+```bash
+python3 scripts/prepare_offline_deployment.py /Volumes/ESD-USB
+```
+
+For a Windows x64 laptop target:
+
+```bash
+python3 scripts/prepare_offline_deployment.py /Volumes/ESD-USB \
+  --bundle-name UAVDetection_offline_current \
+  --wheel-platform windows-x64 \
+  --wheel-python-version 311 \
+  --force
+```
+
+The bundle contains:
+
+- repo source without Git metadata or generated compatibility symlink folders
+- current `data_store/`
+- `wheelhouse/` for offline Python dependency installation when wheels can be downloaded on the packaging machine
+- `install_offline.sh` at the bundle root
+- `install_offline.ps1` and `install_offline.cmd` for Windows
+- `scripts/install_offline_deployment.py` inside the project copy
+
+On a macOS/Linux target computer:
+
+```bash
+cd /Volumes/ESD-USB/UAVDetection_offline_YYYYMMDD_HHMMSS
+./install_offline.sh
+```
+
+On a Windows target computer, install Python 3.11 first, then run:
+
+```powershell
+cd E:\UAVDetection_offline_current
+.\install_offline.ps1
+```
+
+The installer copies the project to `~/UAVDetection` on macOS/Linux or `%USERPROFILE%\UAVDetection` on Windows by default, creates `.venv`, installs dependencies from the wheelhouse, initializes `data_store`, installs an autostart service, and points common browser home/start pages to `https://127.0.0.1:8765`. Default login is `admin / admin123` unless overridden with `--password <value>`. Use `--install-dir <path>` for a different target directory, or `--force` to replace an existing install directory.
+
+Platform caveat: build the wheelhouse on the same platform family as the target. A macOS bundle is not a Jetson/Linux ARM dependency bundle.
+
 Annotation workflow:
 
 1. Select media folder.
@@ -295,6 +340,35 @@ Annotation workflow:
 6. Use `Save Negative` for reviewed frames/images with no drone.
 
 ## Common Commands
+
+Run live detection from a local camera, one-off RTSP source, video, or image:
+
+```bash
+python -m app.main --source 0
+python -m app.main --source usb:1
+python -m app.main --list-cameras
+python -m app.main --source "rtsp://user:password@camera-ip:554/stream1"
+python -m app.main --source data_store/raw_data/Roni/IMG_0980.PNG
+python -m app.main --source data_store/raw_data/Roni/IMG_0796.MOV
+```
+
+The web annotation server now includes a separate `Live Detection` tab. It uses the same camera registry, automatically scans local USB/embedded cameras into the source list at page startup, can re-scan local cameras on demand, can pick files from the currently scanned annotation media folder, exposes FPS/frame-skip/image-size/device controls plus fast/balanced/quality presets, and streams annotated MJPEG frames through `/api/live/stream`. The tab can also record processed live frames back into the selected media folder as browser-playable H.264 MP4 `record_DDMM_HH:MM.mp4` segments for later annotation; segments roll over conservatively at 28 MiB to stay under a 30 MiB target file size. Live sessions write one JSON event per line to `data_store/detection_results/live_events/YYYY-MM-DD/events.jsonl`, with drone detection snapshots saved under `frames/<session_id>/`.
+
+Camera registry:
+
+```text
+configs/cameras.example.yaml                 # tracked template
+data_store/system_config/cameras.yaml        # local site-specific camera list, empty by default
+```
+
+Camera credentials should be supplied via environment variables such as `UAV_CAMERA_USER` and `UAV_CAMERA_PASSWORD`, not committed to Git.
+
+Quick source/FPS test without loading YOLO:
+
+```bash
+python scripts/test_rtsp.py --list-cameras
+python scripts/test_rtsp.py "rtsp://user:password@camera-ip:554/stream1" --seconds 10
+```
 
 Refresh stats:
 

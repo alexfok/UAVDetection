@@ -9,8 +9,8 @@ import cv2
 import numpy as np
 
 from app.alert import AlertManager
-from app.config import AppConfig, load_config, parse_video_source
-from app.detector import DroneDetector
+from app.config import AppConfig, load_config
+from app.sources import SourceSpec, camera_summary, open_source_capture, resolve_source
 from app.tracker import SimpleTracker
 from app.ui import OpenCVUI
 
@@ -23,8 +23,18 @@ def main() -> int:
     apply_overrides(config, args)
     configure_logging(config.logging.level)
 
-    source = parse_video_source(config.video.source)
-    source_label = str(config.video.source)
+    if args.list_cameras:
+        for line in camera_summary(config.video.camera_config):
+            print(line)
+        return 0
+
+    try:
+        source = resolve_source(config.video.source, config.video.camera_config)
+    except ValueError as exc:
+        LOGGER.error("%s", exc)
+        return 2
+
+    from app.detector import DroneDetector
 
     detector = DroneDetector(config.detector)
     tracker = SimpleTracker(config.tracker, config.alert.window_seconds)
@@ -46,7 +56,7 @@ def main() -> int:
             ok, frame = cap.read()
             if not ok or frame is None:
                 if not is_reconnectable_source(source):
-                    LOGGER.info("Reached end of local video source: %s", source)
+                    LOGGER.info("Reached end of source: %s", source.label)
                     return 0
 
                 cap = reconnect_capture(cap, source, config)
@@ -67,13 +77,14 @@ def main() -> int:
             alert = alert_manager.update(tracks, now)
             fps = fps_meter.update()
 
-            annotated = ui.draw(frame, tracks, alert, fps, source_label)
+            annotated = ui.draw(frame, tracks, alert, fps, source.label)
 
             if config.ui.save_output:
                 writer = ensure_writer(writer, config.ui.output_path, annotated, fps)
                 writer.write(annotated)
 
-            result = ui.show(annotated)
+            wait_ms = 0 if source.is_image and config.ui.show_window else 1
+            result = ui.show(annotated, wait_ms=wait_ms)
             if result.should_quit:
                 LOGGER.info("Quit requested by user.")
                 return 0
@@ -91,16 +102,26 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fast Drone Detection PoC")
     parser.add_argument("--config", default="configs/config.yaml", help="Path to YAML config file")
     parser.add_argument("--source", help="Override video source: mp4 path, RTSP URL, or webcam index")
+    parser.add_argument("--camera", help="Use a named camera from the camera registry")
+    parser.add_argument("--cameras", help="Path to camera registry YAML")
+    parser.add_argument("--list-cameras", action="store_true", help="List configured cameras and exit")
     parser.add_argument("--model", help="Override YOLO model path, e.g. data_store/models/base/yolov8n.pt")
     parser.add_argument("--no-window", action="store_true", help="Run without opening the OpenCV window")
     parser.add_argument("--save-output", action="store_true", help="Save annotated video output")
     parser.add_argument("--log-level", help="Override log level")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.camera and args.source:
+        parser.error("--camera and --source are mutually exclusive")
+    return args
 
 
 def apply_overrides(config: AppConfig, args: argparse.Namespace) -> None:
     if args.source:
         config.video.source = args.source
+    if args.camera:
+        config.video.source = f"camera:{args.camera}"
+    if args.cameras:
+        config.video.camera_config = args.cameras
     if args.model:
         config.detector.model_path = args.model
     if args.no_window:
@@ -118,27 +139,27 @@ def configure_logging(level: str) -> None:
     )
 
 
-def open_capture(source: str | int, config: AppConfig) -> cv2.VideoCapture:
-    LOGGER.info("Opening video source: %s", source)
-    cap = cv2.VideoCapture(source)
+def open_capture(source: SourceSpec, config: AppConfig):
+    LOGGER.info("Opening %s source: %s", source.kind, source.label)
+    cap = open_source_capture(source)
     if config.video.buffer_size > 0:
         cap.set(cv2.CAP_PROP_BUFFERSIZE, config.video.buffer_size)
 
     if not cap.isOpened():
-        raise RuntimeError(f"Unable to open video source: {source}")
+        raise RuntimeError(f"Unable to open source: {source.label}")
     return cap
 
 
 def reconnect_capture(
-    cap: cv2.VideoCapture,
-    source: str | int,
+    cap,
+    source: SourceSpec,
     config: AppConfig,
-) -> cv2.VideoCapture | None:
+):
     cap.release()
     for attempt in range(1, config.video.reconnect_attempts + 1):
         LOGGER.warning("Lost video source; reconnect attempt %s/%s", attempt, config.video.reconnect_attempts)
         time.sleep(config.video.reconnect_delay_sec)
-        candidate = cv2.VideoCapture(source)
+        candidate = open_source_capture(source)
         if config.video.buffer_size > 0:
             candidate.set(cv2.CAP_PROP_BUFFERSIZE, config.video.buffer_size)
         if candidate.isOpened():
@@ -147,12 +168,8 @@ def reconnect_capture(
     return None
 
 
-def is_reconnectable_source(source: str | int) -> bool:
-    if isinstance(source, int):
-        return True
-
-    source_lower = source.lower()
-    return source_lower.startswith(("rtsp://", "rtmp://", "http://", "https://"))
+def is_reconnectable_source(source: SourceSpec) -> bool:
+    return source.kind in {"camera", "rtsp", "stream"}
 
 
 def resize_frame(frame: np.ndarray, max_width: int, max_height: int) -> np.ndarray:

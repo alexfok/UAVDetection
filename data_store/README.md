@@ -9,6 +9,24 @@ Fresh deployment has two project-level steps:
 
 The download step restores raw media, datasets, annotations, detection results, model weights, system config, stats, and compatibility links used by older paths.
 
+For no-Internet deployment, create an offline USB bundle from the repo root:
+
+```bash
+python3 scripts/prepare_offline_deployment.py /Volumes/ESD-USB
+```
+
+For a Windows x64 laptop target, build a Windows wheelhouse:
+
+```bash
+python3 scripts/prepare_offline_deployment.py /Volumes/ESD-USB \
+  --bundle-name UAVDetection_offline_current \
+  --wheel-platform windows-x64 \
+  --wheel-python-version 311 \
+  --force
+```
+
+That bundle includes this `data_store/` directory, the project code, install scripts, and a Python wheelhouse when available. On macOS/Linux, run `./install_offline.sh` from the bundle root. On Windows, run `.\install_offline.ps1` or `install_offline.cmd` from the bundle root.
+
 Expected layout:
 
 ```text

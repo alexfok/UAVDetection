@@ -8,27 +8,22 @@
   </head>
   <body>
     <div class="app">
-      <header class="topbar">
-        <div class="field grow">
-          <label for="folderInput">Media folder</label>
-          <input id="folderInput" type="text" spellcheck="false" placeholder="data_store/raw_data/Roni">
-        </div>
-        <button id="scanButton" type="button">Scan</button>
-        <div class="field grow">
-          <label for="projectInput">Annotation project</label>
-          <input id="projectInput" type="text" spellcheck="false" placeholder="data_store/datasets/web_drone_v1">
-        </div>
-        <div class="field small">
-          <label for="splitSelect">Split</label>
-          <select id="splitSelect">
-            <option value="train">train</option>
-            <option value="val">val</option>
-          </select>
-        </div>
-      </header>
+      <div id="notificationTray" class="notificationTray" aria-live="polite" aria-atomic="false"></div>
+      <nav class="tabs" aria-label="Workspace">
+        <button id="annotateTabButton" class="tabButton active" type="button">Annotate</button>
+        <button id="liveTabButton" class="tabButton" type="button">Live Detection</button>
+      </nav>
 
       <main class="workspace">
         <aside class="mediaPanel">
+          <div class="panelHeader folderHeader">
+            <div class="field grow">
+              <label for="folderInput">Media folder</label>
+              <input id="folderInput" type="text" spellcheck="false" placeholder="data_store/raw_data/Roni">
+            </div>
+            <button id="scanButton" type="button">Scan</button>
+          </div>
+
           <div class="panelHeader">
             <div class="panelTitleBlock">
               <strong id="mediaCount">0 files</strong>
@@ -87,33 +82,133 @@
         </aside>
 
         <section class="stage">
-          <div class="stageToolbar">
-            <button id="prevButton" type="button">Prev</button>
-            <button id="nextButton" type="button">Next</button>
-            <button id="videoButton" type="button">Video</button>
-            <button id="playButton" type="button">Play</button>
-            <button id="pauseButton" type="button">Pause</button>
-            <button id="backButton" type="button">-1s</button>
-            <button id="forwardButton" type="button">+1s</button>
-            <button id="captureButton" type="button">Capture</button>
-            <button id="undoButton" type="button">Undo</button>
-            <button id="clearButton" type="button">Clear</button>
-            <button id="negativeButton" type="button">Save Negative</button>
-            <button id="saveButton" type="button" class="primary">Save Boxes</button>
-            <span id="statusText" class="status">Ready</span>
+          <section id="annotationTab" class="modeToolbar active">
+            <header class="topbar">
+              <div class="field grow">
+                <label for="projectInput">Annotation project</label>
+                <input id="projectInput" type="text" spellcheck="false" placeholder="data_store/datasets/web_drone_v1">
+              </div>
+              <div class="field small">
+                <label for="splitSelect">Split</label>
+                <select id="splitSelect">
+                  <option value="train">train</option>
+                  <option value="val">val</option>
+                </select>
+              </div>
+              <div class="toolbarGroup">
+                <button id="prevButton" type="button">Prev</button>
+                <button id="nextButton" type="button">Next</button>
+                <button id="videoButton" type="button">Video</button>
+                <button id="playButton" type="button">Play</button>
+                <button id="pauseButton" type="button">Pause</button>
+                <button id="backButton" type="button">-1s</button>
+                <button id="forwardButton" type="button">+1s</button>
+              </div>
+              <div class="toolbarGroup">
+                <button id="captureButton" type="button">Capture</button>
+                <button id="undoButton" type="button">Undo</button>
+                <button id="clearButton" type="button">Clear</button>
+                <button id="negativeButton" type="button">Save Negative</button>
+                <button id="saveButton" type="button" class="primary">Save Boxes</button>
+              </div>
+              <span id="statusText" class="status">Ready</span>
+            </header>
+          </section>
+
+          <section id="liveTab" class="modeToolbar">
+            <header class="topbar detectionBar">
+              <div class="field medium">
+                <label for="liveCameraSelect">Camera source</label>
+                <select id="liveCameraSelect">
+                  <option value="">Custom source</option>
+                </select>
+              </div>
+              <button id="liveScanLocalButton" type="button">Scan Local</button>
+              <div class="field grow">
+                <label for="liveSourceInput">Source</label>
+                <input id="liveSourceInput" type="text" spellcheck="false" placeholder="0, usb:1, rtsp://..., video/image path">
+              </div>
+              <div class="field tiny">
+                <label for="liveConfInput">Conf</label>
+                <input id="liveConfInput" type="number" min="0.05" max="0.95" step="0.05" value="0.5">
+              </div>
+              <div class="field tiny">
+                <label for="liveFpsInput">FPS</label>
+                <input id="liveFpsInput" type="number" min="0.5" max="30" step="0.5" value="5">
+              </div>
+              <div class="field tiny">
+                <label for="liveFrameSkipInput">Skip</label>
+                <input id="liveFrameSkipInput" type="number" min="0" max="30" step="1" value="0" title="Frames to skip between detector runs">
+              </div>
+              <div class="field small">
+                <label for="livePresetSelect">Preset</label>
+                <select id="livePresetSelect">
+                  <option value="balanced">Balanced</option>
+                  <option value="fast">Fast</option>
+                  <option value="quality">Quality</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+              <div class="field tiny">
+                <label for="liveImageSizeInput">Image size</label>
+                <input id="liveImageSizeInput" type="number" min="256" max="1280" step="32" value="640">
+              </div>
+              <div class="field small">
+                <label for="liveDeviceSelect">Device</label>
+                <select id="liveDeviceSelect">
+                  <option value="">auto</option>
+                  <option value="mps">mps</option>
+                  <option value="cpu">cpu</option>
+                  <option value="cuda">cuda</option>
+                  <option value="cuda:0">cuda:0</option>
+                </select>
+              </div>
+              <label class="toggleField" for="liveRecordInput">
+                <input id="liveRecordInput" type="checkbox">
+                <span>Record</span>
+              </label>
+              <button id="liveStartButton" type="button" class="primary">Start</button>
+              <button id="liveStopButton" type="button">Stop</button>
+            </header>
+          </section>
+
+          <div id="annotationView" class="modeStage active">
+            <div class="mediaTitle">
+              <span id="currentName">No media selected</span>
+              <span id="boxCount">0 boxes</span>
+            </div>
+
+            <div class="viewer">
+              <video id="videoPlayer" controls playsinline></video>
+              <img id="imagePreview" alt="">
+              <canvas id="annotationCanvas"></canvas>
+            </div>
           </div>
 
-          <div class="mediaTitle">
-            <span id="currentName">No media selected</span>
-            <span id="boxCount">0 boxes</span>
-          </div>
-
-          <div class="viewer">
-            <video id="videoPlayer" controls playsinline></video>
-            <img id="imagePreview" alt="">
-            <canvas id="annotationCanvas"></canvas>
+          <div id="liveView" class="modeStage">
+            <div class="mediaTitle liveMeta">
+              <strong id="liveTitle">Live Detection</strong>
+              <span id="liveStatus">Ready</span>
+            </div>
+            <div class="viewer liveViewer">
+              <video id="liveVideoPreview" controls playsinline></video>
+              <img id="liveImagePreview" alt="">
+              <img id="liveStream" alt="">
+              <div id="livePlaceholder" class="livePlaceholder">Select a source and start detection</div>
+            </div>
           </div>
         </section>
+
+        <aside class="eventsPanel">
+          <div class="panelHeader">
+            <div class="panelTitleBlock">
+              <strong>Recent events</strong>
+              <span id="liveEventsUpdatedAt" class="panelMeta">Events not loaded</span>
+            </div>
+            <button id="liveRefreshEventsButton" type="button">Refresh</button>
+          </div>
+          <div id="liveEventList" class="eventList"></div>
+        </aside>
       </main>
     </div>
 

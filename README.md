@@ -2,7 +2,7 @@
 
 Standalone Python/OpenCV prototype for local UAV detection experiments from webcam, local video, RTSP streams, and offline media folders.
 
-The current baseline uses Ultralytics YOLO with general COCO weights (`data_store/models/base/yolov8n.pt`). COCO does not include true `drone`, `uav`, or `quadcopter` classes, so this project can consolidate selected proxy labels. By default, `airplane` and `kite` are displayed and scored as `drone`.
+The default live detector uses the current trained single-class drone model (`data_store/models/trained/yolov8n_drone_best.pt`). The older COCO baseline (`data_store/models/base/yolov8n.pt`) is still available; COCO does not include true `drone`, `uav`, or `quadcopter` classes, so this project can consolidate selected proxy labels. By default, `airplane` and `kite` are displayed and scored as `drone`.
 
 ## What Is Included
 
@@ -45,6 +45,82 @@ If Google Drive Desktop is mounted instead of rclone, download with:
 ```bash
 python3 scripts/datastore_sync.py sync-down --yes --backend local --local-remote-path <mounted-folder>
 ```
+
+## Offline USB Deployment
+
+Use this path when the target computer has no Internet access. The bundle contains the repo code, the current `data_store/`, install scripts, and a Python wheelhouse when package download succeeds on the packaging machine.
+
+Prepare a USB bundle:
+
+```bash
+python3 scripts/prepare_offline_deployment.py /Volumes/ESD-USB
+```
+
+For a Windows x64 laptop target, build Windows wheels from the Mac packaging machine:
+
+```bash
+python3 scripts/prepare_offline_deployment.py /Volumes/ESD-USB \
+  --bundle-name UAVDetection_offline_current \
+  --wheel-platform windows-x64 \
+  --wheel-python-version 311 \
+  --force
+```
+
+The command creates a timestamped folder such as:
+
+```text
+/Volumes/ESD-USB/UAVDetection_offline_YYYYMMDD_HHMMSS/
+```
+
+On a macOS/Linux target computer, open a terminal and run:
+
+```bash
+cd /Volumes/ESD-USB/UAVDetection_offline_YYYYMMDD_HHMMSS
+./install_offline.sh
+```
+
+On a Windows target computer, install Python 3.11 first, then open PowerShell and run:
+
+```powershell
+cd E:\UAVDetection_offline_current
+.\install_offline.ps1
+```
+
+Or from Command Prompt:
+
+```bat
+E:\UAVDetection_offline_current\install_offline.cmd
+```
+
+The installer copies the bundled project to `~/UAVDetection` by default, then:
+
+- creates `.venv`
+- installs Python packages from `UAVDetection/wheelhouse/` without contacting the Internet
+- initializes `data_store/` and compatibility links
+- creates or reuses a self-signed HTTPS certificate
+- installs automatic server startup on login/boot (`launchd` on macOS, user `systemd` on Linux, scheduled task on Windows)
+- updates common browser home/start pages to the local server URL when browser profiles are found
+- writes a local shortcut file, `UAVDetection_Server.url`
+
+Default local URL and login:
+
+```text
+https://127.0.0.1:8765
+admin / admin123
+```
+
+Useful installer options:
+
+```bash
+./install_offline.sh --install-dir ~/UAVDetection
+./install_offline.sh --install-dir ~/UAVDetection --force
+./install_offline.sh --password admin123
+./install_offline.sh --no-browser-homepage
+./install_offline.sh --no-autostart
+./install_offline.sh --allow-online
+```
+
+Important: Python wheels are platform-specific. A bundle prepared with the default wheelhouse on macOS is suitable for a compatible macOS target, but not for Windows or Jetson/Linux ARM. For the Windows laptop, use `--wheel-platform windows-x64 --wheel-python-version 311` and install Python 3.11 on the target first. For Jetson, prepare the bundle on Jetson or another compatible Linux ARM environment, or provide a matching wheelhouse manually.
 
 ## Data Store
 
@@ -101,14 +177,20 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Model weights are stored in `data_store/models/`. The base COCO model is expected at `data_store/models/base/yolov8n.pt`; if it is missing, Ultralytics can download `yolov8n.pt` when you explicitly pass that model name.
+Model weights are stored in `data_store/models/`. The default live model is expected at `data_store/models/trained/yolov8n_drone_best.pt`. The base COCO model is expected at `data_store/models/base/yolov8n.pt`; if it is missing, Ultralytics can download `yolov8n.pt` when you explicitly pass that model name.
 
 ## Live Detection Examples
 
-Webcam:
+Embedded or default USB camera:
 
 ```bash
 python -m app.main --source 0
+```
+
+Specific USB camera:
+
+```bash
+python -m app.main --source usb:1
 ```
 
 Local video:
@@ -117,10 +199,34 @@ Local video:
 python -m app.main --source videos/test.mp4
 ```
 
+Local image:
+
+```bash
+python -m app.main --source data_store/raw_data/Roni/IMG_0980.PNG
+```
+
 RTSP stream:
 
 ```bash
 python -m app.main --source "rtsp://user:password@camera-ip:554/stream1"
+```
+
+Named camera from the local registry, after you add a verified RTSP camera to `data_store/system_config/cameras.yaml`:
+
+```bash
+python -m app.main --list-cameras
+export UAV_CAMERA_USER='camera-user'
+export UAV_CAMERA_PASSWORD='camera-password'
+python -m app.main --camera example_camera
+```
+
+The default camera registry path is `data_store/system_config/cameras.yaml`, which is ignored by Git because it is site-specific. It is empty by default; use `configs/cameras.example.yaml` as the tracked template when you are ready to add verified RTSP cameras.
+
+Quick source/FPS test without loading YOLO:
+
+```bash
+python scripts/test_rtsp.py --list-cameras
+python scripts/test_rtsp.py "rtsp://user:password@camera-ip:554/stream1" --seconds 10
 ```
 
 Use the YAML config:
@@ -225,6 +331,33 @@ python3 scripts/annotation_server.py --port 8766
 ```
 
 The web UI scans a local folder for movies/images. For videos, play to the desired moment, click `Capture`, draw boxes on the captured frame, then `Save Boxes`. For images, draw directly and save. `Save Negative` stores the current image/frame with an empty YOLO label file.
+
+The same server also has a `Live Detection` tab for source testing and live monitoring. It can stream annotated detections from named cameras, direct RTSP URLs, USB/embedded cameras, video files, or image files:
+
+```bash
+python3 scripts/annotation_server.py \
+  --host 0.0.0.0 \
+  --port 8765 \
+  --default-folder data_store/raw_data/Roni \
+  --project-dir data_store/datasets/web_drone_v1 \
+  --camera-config data_store/system_config/cameras.yaml \
+  --live-model data_store/models/trained/yolov8n_drone_best.pt
+```
+
+In the browser, open `Live Detection`, then choose a named camera, pick an auto-scanned local USB/embedded camera, pick a media file from the scanned annotation folder, or enter a custom source. Use `Scan Local` to refresh local camera discovery. Tune confidence, FPS, frame-skip, image size, and device (`auto`, `mps`, `cpu`, `cuda`). The `Fast` preset raises requested FPS, skips frames, and lowers inference image size; `Quality` does the opposite.
+
+Enable `Record` before pressing `Start` to save the streamed frames into the selected media folder for later annotation. Recordings use browser-playable H.264 MP4 files named `record_DDMM_HH:MM.mp4`; if a recording rolls over, later segments add `_02`, `_03`, and so on. Recording writes the resized, unannotated frames that are being processed by live detection, and the media list refreshes after recording stops.
+
+Recording files are capped with segment rollover: the server targets a conservative 28 MiB rollover point under a 30 MiB maximum. This keeps individual clips small enough to sync and annotate comfortably while preserving longer sessions as multiple ordered segments.
+
+Live detection sessions write one JSON event per line to a daily log, with saved JPEG frames for drone detections:
+
+```text
+data_store/detection_results/live_events/YYYY-MM-DD/events.jsonl
+data_store/detection_results/live_events/YYYY-MM-DD/frames/<session_id>/*.jpg
+```
+
+Event types include `start`, `stop`, `drone_detected`, `recording_started`, `recording_saved`, `recording_skipped`, and `error`.
 
 Saved annotations are written as a YOLO dataset:
 
@@ -386,3 +519,32 @@ scripts/extract_frames.sh videos/test.mp4 frames/test 1
 - Re-run the assessment with the drone model via `--model data_store/models/trained/yolov8n_drone_best.pt`.
 - Compare proxy-model and drone-model results across the same run folders.
 - Tune `confidence_threshold`, `image_size`, and `frame_step` for field performance.
+
+# Talk to Segal about fiber optic detection techniques
+
+# check dataset:
+  I found annoted drones dataset https://huggingface.co/datasets/lgrzybowski/seraphim-drone-detection-dataset
+  I think it is from Ukraine (including Shaheds) - we can exclude them.  Did not download it yet but plan to do it and look into it.
+# Jetson setup
+# Local network setup for field
+# Deploy project on Jetson
+# UI for detection
+  - choose source - folder, stream
+  - detection - Support for video stream
+  - detection notification - how to?
+# Detection
+  - Done
+  - single video streams support
+  - multiple video streams support
+  - various video sources support - USB camera, RTSP camera, etc
+  - align detection media player with annotation one
+  - support WEB cam, remove home cameras
+  - sort media by modification time - newset file on top
+  - save detection log\events to file - by date: start, stop, drone detected + image frame
+  - add record stream option, save it to media library for later annotation
+
+  - verify default parameters
+  - deploy and start automatically
+
+  - video stream source from client side - e.g. mobile client support
+  - lower resolution / frame-step filter

@@ -78,6 +78,60 @@ label {
   overflow: hidden;
 }
 
+.notificationTray {
+  position: fixed;
+  top: 56px;
+  right: 12px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(360px, calc(100vw - 24px));
+  pointer-events: none;
+}
+
+.notificationToast {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #101315;
+  color: var(--text);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.notificationToast.info {
+  border-color: var(--accent);
+}
+
+.notificationToast.success {
+  border-color: var(--good);
+}
+
+.notificationToast.error {
+  border-color: var(--danger);
+}
+
+.tabs {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: #0f1113;
+}
+
+.tabButton {
+  height: 34px;
+}
+
+.tabButton.active {
+  border-color: var(--accent);
+  background: #16313a;
+}
+
 .topbar {
   display: flex;
   align-items: end;
@@ -86,6 +140,22 @@ label {
   padding: 12px;
   border-bottom: 1px solid var(--line);
   background: var(--panel);
+}
+
+.modeToolbar {
+  flex: 0 0 auto;
+  display: none;
+}
+
+.modeToolbar.active {
+  display: block;
+}
+
+.toolbarGroup {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .field.grow {
@@ -97,11 +167,42 @@ label {
   width: 110px;
 }
 
+.field.medium {
+  flex: 0 1 260px;
+  min-width: 180px;
+}
+
+.field.tiny {
+  width: 88px;
+}
+
+.toggleField {
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #0f1113;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.toggleField input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
 .workspace {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(340px, 420px) minmax(0, 1fr);
+  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr) minmax(300px, 360px);
+  overflow: hidden;
 }
 
 .mediaPanel {
@@ -160,6 +261,10 @@ label {
 .panelActions button:disabled {
   cursor: default;
   opacity: 0.6;
+}
+
+.folderHeader {
+  align-items: end;
 }
 
 .sidebarStats {
@@ -341,20 +446,21 @@ label {
   overflow: hidden;
 }
 
-.stageToolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  padding: 10px;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
-}
-
 .status {
   color: var(--muted);
   margin-left: auto;
   white-space: nowrap;
+}
+
+.modeStage {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: none;
+  flex-direction: column;
+}
+
+.modeStage.active {
+  display: flex;
 }
 
 .mediaTitle {
@@ -379,7 +485,10 @@ label {
 
 #videoPlayer,
 #imagePreview,
-#annotationCanvas {
+#annotationCanvas,
+#liveVideoPreview,
+#liveImagePreview,
+#liveStream {
   height: auto;
   max-width: 100%;
   max-height: calc(100vh - 180px);
@@ -400,6 +509,168 @@ label {
   touch-action: none;
 }
 
+.liveMeta {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+
+.liveMeta strong {
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.liveViewer {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: block;
+  overflow: auto;
+  padding: 12px;
+  background: #080a0c;
+}
+
+#liveVideoPreview,
+#liveImagePreview,
+#liveStream {
+  display: none;
+  max-width: 100%;
+  max-height: calc(100vh - 180px);
+  height: auto;
+  object-fit: contain;
+  background: #050607;
+}
+
+.livePlaceholder {
+  min-height: 240px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--line);
+  color: var(--muted);
+}
+
+.eventsPanel {
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid var(--line);
+  background: #151719;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.eventsPanel .panelHeader {
+  flex: 0 0 auto;
+}
+
+.eventsPanel button {
+  flex: 0 0 auto;
+}
+
+.eventList {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+  scrollbar-gutter: stable;
+}
+
+.eventItem {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 9px;
+  margin-bottom: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #101315;
+}
+
+.eventItem.noImage {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.eventItem.alert {
+  border-color: #9f8b2e;
+  background: #1b180d;
+}
+
+.eventItem.error {
+  border-color: var(--danger);
+}
+
+.eventThumb {
+  width: 72px;
+  height: 54px;
+  object-fit: cover;
+  border: 1px solid #2d3338;
+  border-radius: 4px;
+  background: #050607;
+}
+
+.eventBody {
+  min-width: 0;
+}
+
+.eventTopline {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.eventTopline strong,
+.eventTopline span,
+.eventDetails,
+.eventSource {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eventTopline strong {
+  color: var(--text);
+  font-size: 13px;
+  text-transform: capitalize;
+}
+
+.eventTopline span {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.eventDetails {
+  margin-top: 4px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.eventSource {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.emptyState {
+  padding: 14px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  text-align: center;
+}
+
 @media (max-width: 860px) {
   body {
     overflow: auto;
@@ -411,12 +682,20 @@ label {
     overflow: visible;
   }
 
+  .notificationTray {
+    top: 46px;
+    right: 8px;
+    width: calc(100vw - 16px);
+  }
+
   .topbar {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .field.small {
+  .field.small,
+  .field.medium,
+  .field.tiny {
     width: 100%;
   }
 
@@ -443,6 +722,14 @@ label {
     width: 100%;
   }
 
+  .toolbarGroup {
+    width: 100%;
+  }
+
+  .toolbarGroup button {
+    flex: 1 1 auto;
+  }
+
   .panelActions select,
   .panelActions button {
     flex: 1 1 0;
@@ -453,13 +740,23 @@ label {
     overflow: visible;
   }
 
+  .eventsPanel {
+    flex: 0 0 auto;
+    max-height: 46vh;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+
   .viewer {
     max-height: 62vh;
   }
 
   #videoPlayer,
   #imagePreview,
-  #annotationCanvas {
+  #annotationCanvas,
+  #liveVideoPreview,
+  #liveImagePreview,
+  #liveStream {
     max-width: 100%;
     max-height: 60vh;
   }

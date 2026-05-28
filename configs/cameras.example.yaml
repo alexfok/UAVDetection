@@ -1,0 +1,22 @@
+# Example camera registry for app.main and scripts/test_rtsp.py.
+# Site-specific camera lists belong in data_store/system_config/cameras.yaml.
+# Keep credentials in environment variables, not in this file.
+#
+# Named RTSP cameras are intentionally disabled in the default project setup.
+# Add entries only when a deployment has a verified RTSP URL.
+#
+# defaults:
+#   protocol: rtsp
+#   rtsp_port: 554
+#   rtsp_path: /profile1
+#   username_env: UAV_CAMERA_USER
+#   password_env: UAV_CAMERA_PASSWORD
+#
+# cameras:
+#   example_camera:
+#     name: Example camera
+#     address: 192.168.1.71
+#     model: Example-RTSP-Camera
+
+defaults: {}
+cameras: {}

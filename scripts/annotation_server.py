@@ -12,6 +12,9 @@ import os
 import re
 import secrets
 import ssl
+import sys
+import time
+import uuid
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,10 +23,14 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 STATIC_ROOT = PROJECT_ROOT / "web" / "annotator"
 VIDEO_EXTENSIONS = {".avi", ".m4v", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"}
 IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 MEDIA_EXTENSIONS = VIDEO_EXTENSIONS | IMAGE_EXTENSIONS
+RECORDING_MAX_BYTES = 30 * 1024 * 1024
+RECORDING_ROLLOVER_BYTES = 28 * 1024 * 1024
 MANIFEST_FIELDS = [
     "image_id",
     "split",
@@ -58,6 +65,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-auth", action="store_true", help="Disable Basic Auth. Not recommended off localhost.")
     parser.add_argument("--certfile", type=Path, help="TLS certificate file for HTTPS.")
     parser.add_argument("--keyfile", type=Path, help="TLS private key file for HTTPS.")
+    parser.add_argument("--camera-config", type=Path, default=Path("data_store/system_config/cameras.yaml"))
+    parser.add_argument("--live-model", type=Path, default=Path("data_store/models/trained/yolov8n_drone_best.pt"))
     return parser.parse_args()
 
 
@@ -66,6 +75,8 @@ def main() -> int:
     server = AnnotationServer((args.host, args.port), AnnotationHandler)
     server.default_folder = resolve_user_path(args.default_folder)
     server.default_project_dir = resolve_user_path(args.project_dir)
+    server.camera_config = resolve_user_path(args.camera_config)
+    server.live_model = resolve_user_path(args.live_model)
     server.class_name = args.class_name
     server.auth_enabled = not args.no_auth
     server.auth_username = args.username
@@ -94,6 +105,8 @@ def main() -> int:
     print(f"Annotation server: {scheme}://{display_host}:{args.port}")
     print(f"Default media folder: {server.default_folder}")
     print(f"Default annotation project: {server.default_project_dir}")
+    print(f"Camera registry: {server.camera_config}")
+    print(f"Default live model: {server.live_model}")
     if server.auth_enabled:
         print(f"Username: {server.auth_username}")
         if generated_password:
@@ -111,6 +124,8 @@ def main() -> int:
 class AnnotationServer(ThreadingHTTPServer):
     default_folder: Path
     default_project_dir: Path
+    camera_config: Path
+    live_model: Path
     class_name: str
     auth_enabled: bool
     auth_username: str
@@ -138,8 +153,27 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                     "folder": str(self.server.default_folder),
                     "project_dir": str(self.server.default_project_dir),
                     "class_name": self.server.class_name,
+                    "camera_config": str(self.server.camera_config),
+                    "live_model": str(self.server.live_model),
                 }
             )
+            return
+        if parsed.path == "/api/live/cameras":
+            self.send_live_cameras()
+            return
+        if parsed.path == "/api/live/local-cameras":
+            query = parse_qs(parsed.query)
+            max_index = min(20, max(0, parse_int(query_value(query, "max_index", "5"))))
+            self.send_live_local_cameras(max_index)
+            return
+        if parsed.path == "/api/live/events":
+            query = parse_qs(parsed.query)
+            limit = min(200, max(1, parse_int(query_value(query, "limit", "50"))))
+            self.send_live_events(limit)
+            return
+        if parsed.path == "/api/live/stream":
+            query = parse_qs(parsed.query)
+            self.stream_live_detection(query)
             return
         if parsed.path == "/api/scan":
             query = parse_qs(parsed.query)
@@ -186,7 +220,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
             return
 
         media = []
-        for path in sorted(folder.rglob("*")):
+        for path in folder.rglob("*"):
             if not path.is_file() or path.suffix.lower() not in MEDIA_EXTENSIONS:
                 continue
             stat = path.stat()
@@ -200,6 +234,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                     "mtime": stat.st_mtime,
                 }
             )
+        media.sort(key=lambda item: (-float(item["mtime"]), str(item["relative"]).lower()))
 
         self.send_json({"folder": str(folder), "media": media})
 
@@ -271,6 +306,223 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 "project_dir": str(project_dir),
             }
         )
+
+    def send_live_cameras(self) -> None:
+        try:
+            from app.sources import load_camera_entries
+
+            entries = load_camera_entries(self.server.camera_config)
+            cameras = []
+            for camera_id in sorted(entries):
+                entry = entries[camera_id]
+                cameras.append(
+                    {
+                        "id": camera_id,
+                        "name": entry.name,
+                        "address": entry.address,
+                        "enabled": entry.enabled,
+                        "model": (entry.metadata or {}).get("model", ""),
+                        "vendor": (entry.metadata or {}).get("vendor", ""),
+                    }
+                )
+            self.send_json({"camera_config": str(self.server.camera_config), "cameras": cameras})
+        except Exception as exc:
+            self.send_json({"error": str(exc), "cameras": []}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def send_live_local_cameras(self, max_index: int) -> None:
+        try:
+            from app.sources import scan_local_cameras
+
+            cameras = scan_local_cameras(max_index)
+            self.send_json({"max_index": max_index, "cameras": cameras})
+        except Exception as exc:
+            self.send_json({"error": str(exc), "cameras": []}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def send_live_events(self, limit: int) -> None:
+        events_root = PROJECT_ROOT / "data_store" / "detection_results" / "live_events"
+        self.send_json(
+            {
+                "events_root": str(events_root),
+                "events": read_recent_live_events(events_root, limit),
+            }
+        )
+
+    def stream_live_detection(self, query: dict[str, list[str]]) -> None:
+        source_value = query_value(query, "source", "0")
+        camera_id = query_value(query, "camera", "")
+        if camera_id:
+            source_value = f"camera:{camera_id}"
+
+        model_path = resolve_user_path(query_value(query, "model", str(self.server.live_model)))
+        confidence = parse_float(query_value(query, "conf", "0.5"), 0.5)
+        iou = parse_float(query_value(query, "iou", "0.45"), 0.45)
+        image_size = parse_int(query_value(query, "imgsz", "640")) or 640
+        device = query_value(query, "device", "")
+        frame_skip = max(0, parse_int(query_value(query, "frame_skip", "0")))
+        max_fps = max(0.1, parse_float(query_value(query, "max_fps", "5"), 5.0))
+        max_width = max(0, parse_int(query_value(query, "max_width", "1280")))
+        max_height = max(0, parse_int(query_value(query, "max_height", "720")))
+        jpeg_quality = min(95, max(35, parse_int(query_value(query, "quality", "80"))))
+        record_enabled = parse_bool(query_value(query, "record", "0"))
+        record_dir = resolve_user_path(query_value(query, "record_dir", str(self.server.default_folder)))
+        record_max_bytes = min(
+            RECORDING_MAX_BYTES,
+            max(1, parse_int(query_value(query, "record_max_mb", "30"))) * 1024 * 1024,
+        )
+        record_rollover_bytes = min(RECORDING_ROLLOVER_BYTES, max(1, record_max_bytes - (2 * 1024 * 1024)))
+
+        try:
+            import cv2
+
+            from app.alert import AlertManager
+            from app.config import AlertConfig, DetectorConfig, TrackerConfig, UIConfig
+            from app.detector import DroneDetector
+            from app.sources import open_source_capture, resolve_source
+            from app.tracker import SimpleTracker
+            from app.ui import OpenCVUI
+        except Exception as exc:
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, f"Live detection dependencies failed to load: {exc}")
+            return
+
+        cap = None
+        try:
+            source = resolve_source(source_value, self.server.camera_config)
+            cap = open_source_capture(source)
+            if not cap.isOpened():
+                self.send_error(HTTPStatus.BAD_REQUEST, f"Unable to open source: {source.label}")
+                return
+
+            detector = DroneDetector(
+                DetectorConfig(
+                    model_path=str(model_path),
+                    confidence_threshold=confidence,
+                    iou_threshold=iou,
+                    image_size=image_size,
+                    device=device,
+                )
+            )
+            alert_config = AlertConfig(confidence_threshold=confidence)
+            tracker = SimpleTracker(TrackerConfig(), alert_config.window_seconds)
+            alert_manager = AlertManager(alert_config)
+            ui = OpenCVUI(UIConfig(show_window=False, draw_all_tracks=True, draw_status_bar=False))
+        except Exception as exc:
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+            self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        fps_meter = StreamFPSMeter()
+        frame_index = 0
+        failures = 0
+        min_interval = 1.0 / max_fps
+        last_frame_at = 0.0
+        stop_reason = "completed"
+        event_logger = LiveEventLogger(
+            PROJECT_ROOT / "data_store" / "detection_results" / "live_events",
+            source_label=source.label,
+            source_kind=source.kind,
+            model_path=model_path,
+            settings={
+                "confidence": confidence,
+                "iou": iou,
+                "image_size": image_size,
+                "device": device or "auto",
+                "frame_skip": frame_skip,
+                "max_fps": max_fps,
+                "max_width": max_width,
+                "max_height": max_height,
+                "jpeg_quality": jpeg_quality,
+                "recording_enabled": record_enabled,
+                "recording_max_mb": round(record_max_bytes / 1024 / 1024, 1),
+            },
+        )
+        event_logger.log_start()
+        last_detection_event_at = 0.0
+        recorder: StreamRecorder | None = None
+        if record_enabled:
+            if source.is_image:
+                event_logger.log_recording_skipped("image source does not need stream recording")
+            else:
+                try:
+                    recorder = StreamRecorder(record_dir, max_fps, record_max_bytes, record_rollover_bytes)
+                    event_logger.log_recording_started(record_dir, record_max_bytes)
+                except OSError as exc:
+                    event_logger.log_error(f"recording disabled: {exc}")
+        try:
+            while True:
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    failures += 1
+                    if source.is_image or failures > 30:
+                        stop_reason = "source_exhausted" if source.is_image else "read_failed"
+                        break
+                    time.sleep(0.1)
+                    continue
+                failures = 0
+                frame_index += 1
+                if frame_skip and frame_index % (frame_skip + 1) != 1:
+                    continue
+
+                now = time.monotonic()
+                wait = min_interval - (now - last_frame_at)
+                if wait > 0:
+                    time.sleep(wait)
+                last_frame_at = time.monotonic()
+
+                frame = resize_frame(frame, max_width, max_height)
+                if recorder is not None:
+                    try:
+                        recorder.write(frame)
+                    except Exception as exc:
+                        event_logger.log_error(f"recording disabled: {exc}")
+                        recorder.close()
+                        recorder = None
+                detections = detector.detect(frame)
+                tracks = tracker.update(detections, time.monotonic())
+                alert = alert_manager.update(tracks, time.monotonic())
+                fps = fps_meter.update()
+                annotated = ui.draw(frame, tracks, alert, fps, source.label)
+
+                ok, encoded = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
+                if not ok:
+                    continue
+                payload = encoded.tobytes()
+                event_tracks = alert.tracks if alert.active and alert.tracks else tracks
+                event_now = time.monotonic()
+                if event_tracks and event_logger.should_log_detection(last_detection_event_at, event_now):
+                    last_detection_event_at = event_now
+                    event_logger.log_detection(event_tracks, frame_index, fps, payload)
+                self.wfile.write(b"--frame\r\n")
+                self.wfile.write(b"Content-Type: image/jpeg\r\n")
+                self.wfile.write(f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii"))
+                self.wfile.write(payload)
+                self.wfile.write(b"\r\n")
+                self.wfile.flush()
+
+                if source.is_image:
+                    stop_reason = "image_completed"
+                    break
+        except (BrokenPipeError, ConnectionResetError, ssl.SSLError):
+            stop_reason = "client_disconnected"
+        except Exception as exc:
+            stop_reason = f"error:{type(exc).__name__}"
+            event_logger.log_error(str(exc))
+        finally:
+            if recorder is not None:
+                for segment in recorder.close():
+                    event_logger.log_recording_saved(segment["path"], int(segment["size_bytes"]))
+            cap.release()
+            event_logger.log_stop(stop_reason, frame_index)
 
     def send_static(self, path: Path, content_type: str | None = None) -> None:
         try:
@@ -653,11 +905,332 @@ def source_frame_stats(manifest_path: Path) -> list[dict[str, object]]:
     return sorted(sources.values(), key=lambda item: (-int(item["frames"]), str(item["source"]).lower()))
 
 
+def read_recent_live_events(root_dir: Path, limit: int) -> list[dict[str, object]]:
+    if not root_dir.exists() or not root_dir.is_dir():
+        return []
+
+    events: list[dict[str, object]] = []
+    day_dirs = sorted((path for path in root_dir.iterdir() if path.is_dir()), reverse=True)
+    for day_dir in day_dirs:
+        event_path = day_dir / "events.jsonl"
+        if not event_path.exists():
+            continue
+        try:
+            lines = event_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in reversed(lines):
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict):
+                events.append(event)
+            if len(events) >= limit:
+                return events
+    return events
+
+
+def query_value(query: dict[str, list[str]], name: str, default: str) -> str:
+    values = query.get(name)
+    if not values:
+        return default
+    return str(values[0] or default)
+
+
+def parse_float(value: object, default: float) -> float:
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_bool(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def parse_int(value: object) -> int:
     try:
         return int(float(str(value or 0)))
     except ValueError:
         return 0
+
+
+def resize_frame(frame, max_width: int, max_height: int):
+    if max_width <= 0 or max_height <= 0:
+        return frame
+
+    import cv2
+
+    height, width = frame.shape[:2]
+    scale = min(max_width / width, max_height / height, 1.0)
+    if scale >= 1.0:
+        return frame
+    new_size = (int(width * scale), int(height * scale))
+    return cv2.resize(frame, new_size, interpolation=cv2.INTER_AREA)
+
+
+class StreamRecorder:
+    def __init__(self, output_dir: Path, fps: float, max_bytes: int, rollover_bytes: int) -> None:
+        self.output_dir = output_dir
+        self.fps = max(1.0, min(float(fps or 5.0), 30.0))
+        self.max_bytes = max(1, max_bytes)
+        self.rollover_bytes = min(max(1, rollover_bytes), self.max_bytes)
+        self.stamp = datetime.now().strftime("record_%d%m_%H:%M")
+        self.segment_index = 0
+        self.writer = None
+        self.current_path: Path | None = None
+        self.current_size: tuple[int, int] | None = None
+        self.frames_in_segment = 0
+        self.segment_started_at = 0.0
+        self.completed_paths: list[Path] = []
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def write(self, frame) -> None:
+        height, width = frame.shape[:2]
+        frame_size = (width, height)
+        if self.writer is None or self.current_size != frame_size or self.should_rollover_before_write():
+            self.open_segment(frame_size)
+
+        self.writer.write(frame)
+        self.frames_in_segment += 1
+        if self.current_path and self.current_path.exists() and self.current_path.stat().st_size >= self.rollover_bytes:
+            self.release_current()
+
+    def close(self) -> list[dict[str, object]]:
+        self.release_current()
+        segments: list[dict[str, object]] = []
+        for path in self.completed_paths:
+            if path.exists() and path.stat().st_size > 0:
+                segments.append({"path": path, "size_bytes": path.stat().st_size})
+        return segments
+
+    def should_rollover_before_write(self) -> bool:
+        if self.current_path is None or self.frames_in_segment <= 0:
+            return False
+        if time.monotonic() - self.segment_started_at >= 60.0:
+            return True
+        if not self.current_path.exists():
+            return False
+        current_bytes = self.current_path.stat().st_size
+        if current_bytes >= self.rollover_bytes:
+            return True
+        average_frame_bytes = current_bytes / max(self.frames_in_segment, 1)
+        if average_frame_bytes <= 0:
+            return False
+        return current_bytes + max(average_frame_bytes * 2, 512 * 1024) >= self.max_bytes
+
+    def open_segment(self, frame_size: tuple[int, int]) -> None:
+        self.release_current()
+
+        self.segment_index += 1
+        candidates = [
+            (".mp4", "avc1"),
+            (".mp4", "H264"),
+            (".webm", "VP90"),
+            (".webm", "VP80"),
+            (".mp4", "mp4v"),
+            (".avi", "MJPG"),
+        ]
+        path = None
+        writer = None
+        for suffix, codec in candidates:
+            path, writer = self.try_open_writer(suffix, codec, frame_size)
+            if writer is not None:
+                break
+        if path is None or writer is None:
+            raise RuntimeError(f"unable to create recording file in {self.output_dir}")
+
+        self.writer = writer
+        self.current_path = path
+        self.current_size = frame_size
+        self.frames_in_segment = 0
+        self.segment_started_at = time.monotonic()
+
+    def try_open_writer(self, suffix: str, codec: str, frame_size: tuple[int, int]):
+        import cv2
+
+        path = self.next_segment_path(suffix)
+        writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*codec), self.fps, frame_size)
+        if writer.isOpened():
+            return path, writer
+        writer.release()
+        if path.exists() and path.stat().st_size == 0:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        return None, None
+
+    def release_current(self) -> None:
+        if self.writer is not None:
+            self.writer.release()
+            self.writer = None
+        if self.current_path is not None:
+            if self.current_path.exists() and self.current_path.stat().st_size > 0:
+                self.completed_paths.append(self.current_path)
+            elif self.current_path.exists():
+                try:
+                    self.current_path.unlink()
+                except OSError:
+                    pass
+        self.current_path = None
+        self.current_size = None
+        self.frames_in_segment = 0
+        self.segment_started_at = 0.0
+
+    def next_segment_path(self, suffix: str) -> Path:
+        base = self.stamp if self.segment_index == 1 else f"{self.stamp}_{self.segment_index:02d}"
+        candidate = self.output_dir / f"{base}{suffix}"
+        collision = 2
+        while candidate.exists():
+            candidate = self.output_dir / f"{base}_{collision}{suffix}"
+            collision += 1
+        return candidate
+
+
+class LiveEventLogger:
+    def __init__(
+        self,
+        root_dir: Path,
+        source_label: str,
+        source_kind: str,
+        model_path: Path,
+        settings: dict[str, object],
+    ) -> None:
+        now = datetime.now().astimezone()
+        self.root_dir = root_dir
+        self.day_dir = root_dir / now.strftime("%Y-%m-%d")
+        self.session_id = f"{now.strftime('%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        self.frame_dir = self.day_dir / "frames" / self.session_id
+        self.event_path = self.day_dir / "events.jsonl"
+        self.source_label = source_label
+        self.source_kind = source_kind
+        self.model_path = model_path
+        self.settings = settings
+        self.started_at = time.monotonic()
+        self.detection_cooldown_seconds = 5.0
+        self.detection_count = 0
+
+    def log_start(self) -> None:
+        self._append(
+            {
+                "event_type": "start",
+                "model_path": portable_path(self.model_path),
+                "settings": self.settings,
+            }
+        )
+
+    def log_stop(self, reason: str, frame_index: int) -> None:
+        self._append(
+            {
+                "event_type": "stop",
+                "reason": reason,
+                "frames_seen": frame_index,
+                "elapsed_seconds": round(time.monotonic() - self.started_at, 3),
+                "detection_events": self.detection_count,
+            }
+        )
+
+    def log_error(self, message: str) -> None:
+        self._append({"event_type": "error", "message": message})
+
+    def log_recording_started(self, output_dir: Path, max_bytes: int) -> None:
+        self._append(
+            {
+                "event_type": "recording_started",
+                "message": f"recording to {portable_path(output_dir)}",
+                "recording_dir": portable_path(output_dir),
+                "max_size_mb": round(max_bytes / 1024 / 1024, 1),
+            }
+        )
+
+    def log_recording_saved(self, path: Path, size_bytes: int) -> None:
+        self._append(
+            {
+                "event_type": "recording_saved",
+                "message": f"saved {portable_path(path)}",
+                "recording_path": portable_path(path),
+                "size_bytes": size_bytes,
+            }
+        )
+
+    def log_recording_skipped(self, reason: str) -> None:
+        self._append({"event_type": "recording_skipped", "message": reason})
+
+    def should_log_detection(self, last_logged_at: float, now: float) -> bool:
+        return last_logged_at <= 0 or now - last_logged_at >= self.detection_cooldown_seconds
+
+    def log_detection(self, tracks: list[object], frame_index: int, fps: float, jpeg_bytes: bytes) -> None:
+        self.detection_count += 1
+        event_time = datetime.now().astimezone()
+        image_path = self.frame_dir / f"{event_time.strftime('%H%M%S_%f')}_{self.detection_count:04d}.jpg"
+        try:
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(jpeg_bytes)
+        except OSError as exc:
+            self._append({"event_type": "error", "message": f"failed to save detection frame: {exc}"})
+            return
+
+        best = max(tracks, key=lambda track: getattr(track, "confidence", 0.0))
+        self._append(
+            {
+                "event_type": "drone_detected",
+                "frame_index": frame_index,
+                "fps": round(fps, 2),
+                "image_path": portable_path(image_path),
+                "best_track": serialise_track(best),
+                "tracks": [serialise_track(track) for track in tracks],
+            },
+            event_time,
+        )
+
+    def _append(self, payload: dict[str, object], event_time: datetime | None = None) -> None:
+        event_time = event_time or datetime.now().astimezone()
+        row = {
+            "timestamp": event_time.isoformat(),
+            "session_id": self.session_id,
+            "source": self.source_label,
+            "source_kind": self.source_kind,
+            **payload,
+        }
+        try:
+            self.event_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.event_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(row, sort_keys=True) + "\n")
+        except OSError:
+            return
+
+
+def serialise_track(track: object) -> dict[str, object]:
+    return {
+        "track_id": int(getattr(track, "track_id", 0)),
+        "label": str(getattr(track, "label", "")),
+        "class_id": int(getattr(track, "class_id", 0)),
+        "confidence": round(float(getattr(track, "confidence", 0.0)), 4),
+        "bbox": [int(value) for value in getattr(track, "bbox", ())],
+        "seen_frames": int(getattr(track, "seen_frames", 0)),
+        "recent_hits": int(getattr(track, "recent_hits", 0)),
+    }
+
+
+class StreamFPSMeter:
+    def __init__(self) -> None:
+        self._last = time.monotonic()
+        self._fps = 0.0
+
+    def update(self) -> float:
+        now = time.monotonic()
+        elapsed = now - self._last
+        self._last = now
+        if elapsed <= 0:
+            return self._fps
+
+        instant = 1.0 / elapsed
+        self._fps = instant if self._fps == 0 else (self._fps * 0.85) + (instant * 0.15)
+        return self._fps
 
 
 def upsert_manifest(path: Path, row: dict[str, str]) -> None:
