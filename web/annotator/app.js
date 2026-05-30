@@ -22,16 +22,20 @@ const state = {
   liveRunning: false,
   liveRecording: false,
   liveModelPath: "",
+  trainingJob: null,
 };
 
 const els = {
   notificationTray: document.getElementById("notificationTray"),
   annotateTabButton: document.getElementById("annotateTabButton"),
   liveTabButton: document.getElementById("liveTabButton"),
+  trainingTabButton: document.getElementById("trainingTabButton"),
   annotationTab: document.getElementById("annotationTab"),
   liveTab: document.getElementById("liveTab"),
+  trainingTab: document.getElementById("trainingTab"),
   annotationView: document.getElementById("annotationView"),
   liveView: document.getElementById("liveView"),
+  trainingView: document.getElementById("trainingView"),
   folderInput: document.getElementById("folderInput"),
   projectInput: document.getElementById("projectInput"),
   splitSelect: document.getElementById("splitSelect"),
@@ -84,6 +88,30 @@ const els = {
   liveRefreshEventsButton: document.getElementById("liveRefreshEventsButton"),
   liveEventsUpdatedAt: document.getElementById("liveEventsUpdatedAt"),
   liveEventList: document.getElementById("liveEventList"),
+  trainingScopeSelect: document.getElementById("trainingScopeSelect"),
+  trainingFromDateInput: document.getElementById("trainingFromDateInput"),
+  trainingToDateInput: document.getElementById("trainingToDateInput"),
+  trainingEpochsInput: document.getElementById("trainingEpochsInput"),
+  trainingImageSizeInput: document.getElementById("trainingImageSizeInput"),
+  trainingBatchInput: document.getElementById("trainingBatchInput"),
+  trainingDeviceSelect: document.getElementById("trainingDeviceSelect"),
+  trainingPrepareOnlyInput: document.getElementById("trainingPrepareOnlyInput"),
+  trainingStartButton: document.getElementById("trainingStartButton"),
+  trainingStopButton: document.getElementById("trainingStopButton"),
+  trainingRefreshButton: document.getElementById("trainingRefreshButton"),
+  trainingStatusText: document.getElementById("trainingStatusText"),
+  trainingUpdatedAt: document.getElementById("trainingUpdatedAt"),
+  trainingStateValue: document.getElementById("trainingStateValue"),
+  trainingDetailValue: document.getElementById("trainingDetailValue"),
+  trainingDatasetValue: document.getElementById("trainingDatasetValue"),
+  trainingRangeValue: document.getElementById("trainingRangeValue"),
+  trainingOutputValue: document.getElementById("trainingOutputValue"),
+  trainingElapsedValue: document.getElementById("trainingElapsedValue"),
+  trainingProgressLabel: document.getElementById("trainingProgressLabel"),
+  trainingProgressText: document.getElementById("trainingProgressText"),
+  trainingProgressFill: document.getElementById("trainingProgressFill"),
+  trainingLogPath: document.getElementById("trainingLogPath"),
+  trainingLog: document.getElementById("trainingLog"),
 };
 
 const ctx = els.canvas.getContext("2d");
@@ -98,16 +126,20 @@ async function init() {
   state.liveModelPath = defaults.live_model || "data_store/models/trained/yolov8n_drone_best.pt";
   els.liveSourceInput.value = "0";
   bindEvents();
+  onTrainingScopeChanged();
   await loadLiveCameras();
-  scanLocalCameras({ automatic: true });
+  await loadLocalCameras();
   await scanFolder();
   await refreshLiveEvents();
+  await refreshTrainingStatus();
   window.setInterval(refreshLiveEvents, 5000);
+  window.setInterval(refreshTrainingStatus, 3000);
 }
 
 function bindEvents() {
   els.annotateTabButton.addEventListener("click", () => showTab("annotate"));
   els.liveTabButton.addEventListener("click", () => showTab("live"));
+  els.trainingTabButton.addEventListener("click", () => showTab("training"));
   els.scanButton.addEventListener("click", scanFolder);
   els.folderInput.addEventListener("change", refreshStats);
   els.projectInput.addEventListener("change", refreshStats);
@@ -130,6 +162,13 @@ function bindEvents() {
   els.liveStartButton.addEventListener("click", startLiveDetection);
   els.liveStopButton.addEventListener("click", stopLiveDetection);
   els.liveRefreshEventsButton.addEventListener("click", refreshLiveEvents);
+  els.trainingScopeSelect.addEventListener("change", onTrainingScopeChanged);
+  els.trainingFromDateInput.addEventListener("change", renderTrainingSelection);
+  els.trainingToDateInput.addEventListener("change", renderTrainingSelection);
+  els.trainingPrepareOnlyInput.addEventListener("change", updateTrainingControls);
+  els.trainingStartButton.addEventListener("click", startTrainingJob);
+  els.trainingStopButton.addEventListener("click", stopTrainingJob);
+  els.trainingRefreshButton.addEventListener("click", refreshTrainingStatus);
   els.liveStream.addEventListener("load", () => {
     if (state.liveRunning) setLiveStatus("Streaming");
   });
@@ -164,13 +203,17 @@ function bindEvents() {
 
 function showTab(name) {
   const live = name === "live";
-  state.mode = live ? "live" : "annotate";
+  const training = name === "training";
+  state.mode = live ? "live" : training ? "training" : "annotate";
   els.liveTab.classList.toggle("active", live);
-  els.annotationTab.classList.toggle("active", !live);
+  els.trainingTab.classList.toggle("active", training);
+  els.annotationTab.classList.toggle("active", !live && !training);
   els.liveView.classList.toggle("active", live);
-  els.annotationView.classList.toggle("active", !live);
+  els.trainingView.classList.toggle("active", training);
+  els.annotationView.classList.toggle("active", !live && !training);
   els.liveTabButton.classList.toggle("active", live);
-  els.annotateTabButton.classList.toggle("active", !live);
+  els.trainingTabButton.classList.toggle("active", training);
+  els.annotateTabButton.classList.toggle("active", !live && !training);
   renderMediaList();
   if (live) {
     const selectedMedia = selectedLiveMediaItem();
@@ -179,6 +222,8 @@ function showTab(name) {
     } else if (!state.liveRunning) {
       showLivePlaceholder();
     }
+  } else if (training) {
+    refreshTrainingStatus();
   } else {
     draw();
   }
@@ -237,10 +282,30 @@ function renderLiveCameraSelect() {
   }
 }
 
-async function scanLocalCameras(options = {}) {
+async function loadLocalCameras() {
+  try {
+    const result = await getJson("/api/live/local-cameras?max_index=5");
+    if (result.error) {
+      setLiveStatus(result.error);
+      return;
+    }
+    state.liveLocalCameras = result.cameras || [];
+    renderLiveCameraSelect();
+    if (result.source === "cache" && state.liveLocalCameras.length) {
+      setLiveStatus(`${state.liveLocalCameras.length} local cameras loaded from cache`);
+    } else if (result.source === "scanning") {
+      setLiveStatus("Local camera discovery is running in the background");
+    } else if (result.source === "missing") {
+      setLiveStatus("Local camera cache missing. Use Scan Local.");
+    }
+  } catch (_error) {
+    setLiveStatus("Local camera cache unavailable");
+  }
+}
+
+async function scanLocalCameras() {
   if (state.liveLocalScanRunning) return;
-  const automatic = options && options.automatic === true;
-  const scanLabel = automatic ? "Auto-scanning local cameras" : "Scanning local cameras";
+  const scanLabel = "Scanning local cameras";
   try {
     state.liveLocalScanRunning = true;
     els.liveScanLocalButton.disabled = true;
@@ -248,10 +313,15 @@ async function scanLocalCameras(options = {}) {
     els.liveScanLocalButton.setAttribute("aria-busy", "true");
     setLiveStatus(`${scanLabel}...`);
     showNotification(`${scanLabel} started`, "info", 2500);
-    const result = await getJson("/api/live/local-cameras?max_index=5");
+    const result = await getJson("/api/live/local-cameras?max_index=5&refresh=1");
     if (result.error) {
       setLiveStatus(result.error);
       showNotification(result.error, "error", 5000);
+      return;
+    }
+    if (result.source === "scanning") {
+      setLiveStatus(result.message || "Local camera discovery is already running");
+      showNotification("Local camera discovery is already running", "info", 4000);
       return;
     }
     state.liveLocalCameras = result.cameras || [];
@@ -261,9 +331,6 @@ async function scanLocalCameras(options = {}) {
       : "No local cameras found";
     setLiveStatus(status);
     showNotification(`${scanLabel} finished. ${status}.`, state.liveLocalCameras.length ? "success" : "info", 4000);
-    if (automatic && hasGenericLocalCameraNames(state.liveLocalCameras) && options.retryNames !== false) {
-      window.setTimeout(() => scanLocalCameras({ automatic: true, retryNames: false }), 1500);
-    }
   } catch (_error) {
     setLiveStatus("Local camera scan failed");
     showNotification("Local camera scan failed", "error", 5000);
@@ -273,10 +340,6 @@ async function scanLocalCameras(options = {}) {
     els.liveScanLocalButton.textContent = "Scan Local";
     els.liveScanLocalButton.removeAttribute("aria-busy");
   }
-}
-
-function hasGenericLocalCameraNames(cameras) {
-  return cameras.length > 0 && cameras.some((camera) => /^Local camera \d+$/.test(String(camera.name || "")));
 }
 
 function onLiveCameraChanged() {
@@ -412,6 +475,167 @@ function applyLivePreset() {
 function markLivePresetCustom() {
   els.livePresetSelect.value = "custom";
   stopLiveDetectionForSourceChange();
+}
+
+function onTrainingScopeChanged() {
+  const isDateRange = els.trainingScopeSelect.value === "date-range";
+  els.trainingFromDateInput.disabled = !isDateRange;
+  els.trainingToDateInput.disabled = !isDateRange;
+  renderTrainingSelection();
+  updateTrainingControls();
+}
+
+function trainingPayload() {
+  const scope = els.trainingScopeSelect.value || "since-last";
+  const payload = {
+    dataset_scope: scope,
+    project_dir: els.projectInput.value,
+    model: state.liveModelPath || "data_store/models/trained/yolov8n_drone_best.pt",
+    output_model: state.liveModelPath || "data_store/models/trained/yolov8n_drone_best.pt",
+    epochs: els.trainingEpochsInput.value || "25",
+    imgsz: els.trainingImageSizeInput.value || "640",
+    batch: els.trainingBatchInput.value || "8",
+    device: els.trainingDeviceSelect.value || "",
+    prepare_only: els.trainingPrepareOnlyInput.checked,
+  };
+  if (scope === "date-range") {
+    payload.from_date = els.trainingFromDateInput.value;
+    payload.to_date = els.trainingToDateInput.value;
+  }
+  return payload;
+}
+
+async function startTrainingJob() {
+  const payload = trainingPayload();
+  if (payload.dataset_scope === "date-range" && !payload.from_date && !payload.to_date) {
+    setTrainingStatus("Choose a date range");
+    showNotification("Training date range needs From, To, or both", "error", 4500);
+    return;
+  }
+
+  els.trainingStartButton.disabled = true;
+  setTrainingStatus(payload.prepare_only ? "Preparing dataset..." : "Starting training...");
+  try {
+    const result = await postJson("/api/training/start", payload);
+    if (result.error) {
+      setTrainingStatus(result.error);
+      showNotification(result.error, "error", 6000);
+      renderTrainingStatus(result);
+      return;
+    }
+    renderTrainingStatus(result);
+    showNotification(payload.prepare_only ? "Dataset preparation started" : "Training started", "info", 3000);
+  } catch (_error) {
+    setTrainingStatus("Training request failed");
+    showNotification("Training request failed", "error", 5000);
+  } finally {
+    updateTrainingControls();
+  }
+}
+
+async function stopTrainingJob() {
+  try {
+    setTrainingStatus("Stopping training...");
+    const result = await postJson("/api/training/stop", {});
+    renderTrainingStatus(result);
+  } catch (_error) {
+    setTrainingStatus("Stop request failed");
+  }
+}
+
+async function refreshTrainingStatus() {
+  try {
+    const result = await getJson("/api/training/status");
+    renderTrainingStatus(result);
+  } catch (_error) {
+    setTrainingStatus("Training status unavailable");
+  }
+}
+
+function renderTrainingStatus(result) {
+  const job = result && result.job ? result.job : null;
+  const progress = result && result.progress ? result.progress : { current: 0, total: 0, percent: 0 };
+  state.trainingJob = job;
+  const running = Boolean(result && result.running);
+  const status = job ? String(job.status || result.status || "unknown") : "idle";
+  const percent = Number(progress.percent || 0);
+
+  els.trainingStatusText.textContent = statusText(status);
+  els.trainingUpdatedAt.textContent = `Updated ${formatClock(new Date().toISOString())}`;
+  els.trainingStateValue.textContent = statusText(status);
+  els.trainingStateValue.className = `trainingState ${status}`;
+  els.trainingDetailValue.textContent = jobDetailText(job);
+  els.trainingProgressText.textContent = progress.total
+    ? `${formatInteger(progress.current)} / ${formatInteger(progress.total)} epochs · ${percent.toFixed(percent % 1 ? 1 : 0)}%`
+    : `${percent.toFixed(0)}%`;
+  els.trainingProgressFill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  els.trainingLog.textContent = result && result.log ? result.log : "No training output yet.";
+  els.trainingLogPath.textContent = job && job.log_path ? job.log_path : "No log file";
+  if (state.mode === "training" && running) {
+    els.trainingLog.scrollTop = els.trainingLog.scrollHeight;
+  }
+
+  if (job) {
+    els.trainingDatasetValue.textContent = datasetScopeLabel(job.dataset_scope || els.trainingScopeSelect.value);
+    els.trainingRangeValue.textContent = jobRangeText(job);
+    els.trainingOutputValue.textContent = shortSource(job.output_model || "yolov8n_drone_best.pt");
+    els.trainingElapsedValue.textContent = `Elapsed ${formatDuration(Number(job.elapsed_seconds || 0))}`;
+  } else {
+    renderTrainingSelection();
+  }
+  updateTrainingControls(Boolean(running));
+}
+
+function renderTrainingSelection() {
+  const scope = els.trainingScopeSelect.value || "since-last";
+  els.trainingDatasetValue.textContent = datasetScopeLabel(scope);
+  if (scope === "date-range") {
+    const from = els.trainingFromDateInput.value || "any start";
+    const to = els.trainingToDateInput.value || "any end";
+    els.trainingRangeValue.textContent = `${from} to ${to}`;
+  } else if (scope === "all") {
+    els.trainingRangeValue.textContent = "Uses every reviewed annotation in the project";
+  } else {
+    els.trainingRangeValue.textContent = "Uses annotations saved after the previous training cutoff";
+  }
+  els.trainingOutputValue.textContent = shortSource(state.liveModelPath || "yolov8n_drone_best.pt");
+}
+
+function updateTrainingControls(running = state.trainingJob && ["running", "starting", "stopping"].includes(state.trainingJob.status)) {
+  els.trainingStartButton.disabled = Boolean(running);
+  els.trainingStopButton.disabled = !running;
+  els.trainingStartButton.textContent = els.trainingPrepareOnlyInput.checked ? "Prepare" : "Train";
+}
+
+function setTrainingStatus(text) {
+  els.trainingStatusText.textContent = text;
+}
+
+function statusText(status) {
+  const text = String(status || "idle").replaceAll("_", " ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function jobDetailText(job) {
+  if (!job) return "No training job yet";
+  const mode = job.prepare_only ? "prepare only" : `${formatInteger(job.epochs)} epochs`;
+  const device = job.device || "auto";
+  return `${mode} · ${formatInteger(job.imgsz)}px · batch ${formatInteger(job.batch)} · ${device}`;
+}
+
+function jobRangeText(job) {
+  const scope = String(job.dataset_scope || "");
+  if (scope === "date-range") {
+    return `${job.from_date || "any start"} to ${job.to_date || "any end"}`;
+  }
+  if (scope === "all") return "Every reviewed annotation";
+  return "After previous training metadata/model timestamp";
+}
+
+function datasetScopeLabel(scope) {
+  if (scope === "all") return "All annotations";
+  if (scope === "date-range") return "Date range";
+  return "Since last training";
 }
 
 function liveSourceLabel() {
@@ -1032,6 +1256,16 @@ function formatTime(seconds) {
   const minutes = Math.floor(seconds / 60);
   const rest = Math.floor(seconds % 60).toString().padStart(2, "0");
   return `${minutes}:${rest}`;
+}
+
+function formatDuration(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds || 0)));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const rest = total % 60;
+  if (hours) return `${hours}h ${minutes}m ${rest}s`;
+  if (minutes) return `${minutes}m ${rest}s`;
+  return `${rest}s`;
 }
 
 function escapeHtml(value) {

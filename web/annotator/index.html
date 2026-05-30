@@ -12,6 +12,7 @@
       <nav class="tabs" aria-label="Workspace">
         <button id="annotateTabButton" class="tabButton active" type="button">Annotate</button>
         <button id="liveTabButton" class="tabButton" type="button">Live Detection</button>
+        <button id="trainingTabButton" class="tabButton" type="button">Training</button>
       </nav>
 
       <main class="workspace">
@@ -21,7 +22,7 @@
               <label for="folderInput">Media folder</label>
               <input id="folderInput" type="text" spellcheck="false" placeholder="data_store/raw_data/Roni">
             </div>
-            <button id="scanButton" type="button">Scan</button>
+            <button id="scanButton" type="button">Scan Media</button>
           </div>
 
           <div class="panelHeader">
@@ -35,7 +36,7 @@
                 <option value="video">video</option>
                 <option value="image">image</option>
               </select>
-              <button id="refreshStatsButton" type="button">Refresh</button>
+              <button id="refreshStatsButton" type="button">Refresh Stats</button>
             </div>
           </div>
 
@@ -172,6 +173,57 @@
             </header>
           </section>
 
+          <section id="trainingTab" class="modeToolbar">
+            <header class="topbar trainingBar">
+              <div class="field medium">
+                <label for="trainingScopeSelect">Dataset</label>
+                <select id="trainingScopeSelect">
+                  <option value="since-last">Since last training</option>
+                  <option value="date-range">Date range</option>
+                  <option value="all">All annotations</option>
+                </select>
+              </div>
+              <div class="field small trainingDateField">
+                <label for="trainingFromDateInput">From</label>
+                <input id="trainingFromDateInput" type="date">
+              </div>
+              <div class="field small trainingDateField">
+                <label for="trainingToDateInput">To</label>
+                <input id="trainingToDateInput" type="date">
+              </div>
+              <div class="field tiny">
+                <label for="trainingEpochsInput">Epochs</label>
+                <input id="trainingEpochsInput" type="number" min="1" max="300" step="1" value="25">
+              </div>
+              <div class="field tiny">
+                <label for="trainingImageSizeInput">Image size</label>
+                <input id="trainingImageSizeInput" type="number" min="256" max="1536" step="32" value="640">
+              </div>
+              <div class="field tiny">
+                <label for="trainingBatchInput">Batch</label>
+                <input id="trainingBatchInput" type="number" min="1" max="128" step="1" value="8">
+              </div>
+              <div class="field small">
+                <label for="trainingDeviceSelect">Device</label>
+                <select id="trainingDeviceSelect">
+                  <option value="">auto</option>
+                  <option value="mps">mps</option>
+                  <option value="cpu">cpu</option>
+                  <option value="cuda">cuda</option>
+                  <option value="cuda:0">cuda:0</option>
+                </select>
+              </div>
+              <label class="toggleField" for="trainingPrepareOnlyInput">
+                <input id="trainingPrepareOnlyInput" type="checkbox" checked>
+                <span>Prepare only</span>
+              </label>
+              <button id="trainingStartButton" type="button" class="primary">Start</button>
+              <button id="trainingStopButton" type="button">Stop</button>
+              <button id="trainingRefreshButton" type="button">Refresh</button>
+              <span id="trainingStatusText" class="status">Idle</span>
+            </header>
+          </section>
+
           <div id="annotationView" class="modeStage active">
             <div class="mediaTitle">
               <span id="currentName">No media selected</span>
@@ -195,6 +247,48 @@
               <img id="liveImagePreview" alt="">
               <img id="liveStream" alt="">
               <div id="livePlaceholder" class="livePlaceholder">Select a source and start detection</div>
+            </div>
+          </div>
+
+          <div id="trainingView" class="modeStage">
+            <div class="mediaTitle">
+              <strong>Incremental Training</strong>
+              <span id="trainingUpdatedAt">Not started</span>
+            </div>
+            <div class="trainingDashboard">
+              <div class="trainingCards">
+                <section class="trainingCard">
+                  <span class="trainingLabel">State</span>
+                  <strong id="trainingStateValue">Idle</strong>
+                  <span id="trainingDetailValue" class="trainingMeta">No training job yet</span>
+                </section>
+                <section class="trainingCard">
+                  <span class="trainingLabel">Dataset</span>
+                  <strong id="trainingDatasetValue">Since last training</strong>
+                  <span id="trainingRangeValue" class="trainingMeta">Using saved training metadata cutoff</span>
+                </section>
+                <section class="trainingCard">
+                  <span class="trainingLabel">Output</span>
+                  <strong id="trainingOutputValue">yolov8n_drone_best.pt</strong>
+                  <span id="trainingElapsedValue" class="trainingMeta">Elapsed 0s</span>
+                </section>
+              </div>
+              <section class="trainingProgressPanel">
+                <div class="trainingProgressTop">
+                  <strong id="trainingProgressLabel">Progress</strong>
+                  <span id="trainingProgressText">0%</span>
+                </div>
+                <div class="progressTrack" aria-hidden="true">
+                  <div id="trainingProgressFill" class="progressFill"></div>
+                </div>
+              </section>
+              <section class="trainingLogPanel">
+                <div class="trainingLogHeader">
+                  <strong>Training log</strong>
+                  <span id="trainingLogPath">No log file</span>
+                </div>
+                <pre id="trainingLog" class="trainingLog">No training output yet.</pre>
+              </section>
             </div>
           </div>
         </section>

@@ -140,6 +140,23 @@ data_store/models/trained/yolov8n_drone_best.pt
 data_store/models/trained/runs/yolov8n_drone_web_drone_v1_20260526_130000/
 ```
 
+Incremental training is now supported by `scripts/train_yolov8n_drone.py` snapshot modes:
+
+```bash
+# all current annotations
+.venv/bin/python scripts/train_yolov8n_drone.py --dataset-scope all --prepare-only
+
+# annotations saved after the previous training metadata/model timestamp
+.venv/bin/python scripts/train_yolov8n_drone.py --dataset-scope since-last --prepare-only
+
+# annotations saved in a specific inclusive saved_at range
+.venv/bin/python scripts/train_yolov8n_drone.py --dataset-scope date-range --from-date 2026-05-29 --to-date 2026-05-29 --prepare-only
+```
+
+Remove `--prepare-only` to train. Completed runs write `uav_training_metadata.json` in the Ultralytics run folder and refresh `data_store/models/trained/yolov8n_drone_best.meta.json`, which becomes the cutoff source for the next `since-last` run.
+
+The annotation web UI has a third `Training` tab for the same workflow. It can prepare or launch `all`, `since-last`, and `date-range` jobs, polls `/api/training/status`, shows elapsed time, approximate epoch progress, and a live log tail, and prevents starting a second job while one is running.
+
 Final validation snapshot from epoch 25:
 
 ```text
@@ -330,6 +347,14 @@ The installer copies the project to `~/UAVDetection` on macOS/Linux or `%USERPRO
 
 Platform caveat: build the wheelhouse on the same platform family as the target. A macOS bundle is not a Jetson/Linux ARM dependency bundle.
 
+For an already installed offline Windows laptop, build a smaller copy-only patch ZIP:
+
+```bash
+python3 scripts/prepare_windows_patch.py
+```
+
+The ZIP is written under `data_store/deployment_patches/`. Download it from Google Drive on the laptop, extract it, then run `install_patch.cmd`. The default target is `%USERPROFILE%\UAVDetection`; pass another install directory as the first argument if needed. The patch command stops the `UAVDetection Annotation Server` scheduled task if present, copies the included files, and starts the task again.
+
 Annotation workflow:
 
 1. Select media folder.
@@ -352,7 +377,7 @@ python -m app.main --source data_store/raw_data/Roni/IMG_0980.PNG
 python -m app.main --source data_store/raw_data/Roni/IMG_0796.MOV
 ```
 
-The web annotation server now includes a separate `Live Detection` tab. It uses the same camera registry, automatically scans local USB/embedded cameras into the source list at page startup, can re-scan local cameras on demand, can pick files from the currently scanned annotation media folder, exposes FPS/frame-skip/image-size/device controls plus fast/balanced/quality presets, and streams annotated MJPEG frames through `/api/live/stream`. The tab can also record processed live frames back into the selected media folder as browser-playable H.264 MP4 `record_DDMM_HH:MM.mp4` segments for later annotation; segments roll over conservatively at 28 MiB to stay under a 30 MiB target file size. Live sessions write one JSON event per line to `data_store/detection_results/live_events/YYYY-MM-DD/events.jsonl`, with drone detection snapshots saved under `frames/<session_id>/`.
+The web annotation server now includes a separate `Live Detection` tab. It uses the same camera registry, caches local USB/embedded camera discovery in `data_store/system_config/local_cameras.json`, starts discovery in the background only when that cache is missing, can re-scan local cameras on demand, can pick files from the currently scanned annotation media folder, exposes FPS/frame-skip/image-size/device controls plus fast/balanced/quality presets, and streams annotated MJPEG frames through `/api/live/stream`. The tab can also record processed live frames back into the selected media folder as browser-playable H.264 MP4 `record_DDMM_HH-MM.mp4` segments for later annotation; segments roll over conservatively at 28 MiB to stay under a 30 MiB target file size. Live sessions write one JSON event per line to `data_store/detection_results/live_events/YYYY-MM-DD/events.jsonl`, with drone detection snapshots saved under `frames/<session_id>/`.
 
 Camera registry:
 

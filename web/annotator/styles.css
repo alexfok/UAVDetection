@@ -559,6 +559,120 @@ label {
   color: var(--muted);
 }
 
+.trainingDashboard {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  background: #080a0c;
+}
+
+.trainingCards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.trainingCard,
+.trainingProgressPanel,
+.trainingLogPanel {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #101315;
+}
+
+.trainingCard {
+  min-width: 0;
+  padding: 12px;
+}
+
+.trainingLabel,
+.trainingMeta {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trainingLabel {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.trainingCard strong {
+  display: block;
+  margin-top: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trainingMeta {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.trainingProgressPanel,
+.trainingLogPanel {
+  margin-top: 10px;
+  padding: 12px;
+}
+
+.trainingProgressTop,
+.trainingLogHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.trainingLogHeader span,
+.trainingProgressTop span {
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.progressTrack {
+  height: 12px;
+  margin-top: 10px;
+  overflow: hidden;
+  border: 1px solid #2d3338;
+  border-radius: 999px;
+  background: #050607;
+}
+
+.progressFill {
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 160ms ease;
+}
+
+.trainingLog {
+  min-height: 260px;
+  max-height: min(52vh, 620px);
+  overflow: auto;
+  margin: 10px 0 0;
+  padding: 10px;
+  border: 1px solid #2d3338;
+  border-radius: 6px;
+  background: #050607;
+  color: #d7dde3;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
 .eventsPanel {
   min-width: 0;
   min-height: 0;
@@ -697,6 +811,10 @@ label {
   .field.medium,
   .field.tiny {
     width: 100%;
+  }
+
+  .trainingCards {
+    grid-template-columns: 1fr;
   }
 
   .workspace {

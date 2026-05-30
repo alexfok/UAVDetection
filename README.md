@@ -102,6 +102,30 @@ The installer copies the bundled project to `~/UAVDetection` by default, then:
 - updates common browser home/start pages to the local server URL when browser profiles are found
 - writes a local shortcut file, `UAVDetection_Server.url`
 
+### Windows Patch Deployment
+
+For a Windows laptop that already has the offline project installed, build a copy-only patch ZIP:
+
+```bash
+python3 scripts/prepare_windows_patch.py
+```
+
+The ZIP is written under `data_store/deployment_patches/`. On the Windows laptop:
+
+```text
+1. Download the patch ZIP from Google Drive.
+2. Extract the ZIP.
+3. Run install_patch.cmd.
+```
+
+By default, `install_patch.cmd` patches `%USERPROFILE%\UAVDetection`. If the project is installed elsewhere, pass the install directory:
+
+```bat
+install_patch.cmd D:\UAVDetection
+```
+
+The patch installer stops the `UAVDetection Annotation Server` scheduled task if it exists, copies the included files, then starts the task again.
+
 Default local URL and login:
 
 ```text
@@ -344,9 +368,9 @@ python3 scripts/annotation_server.py \
   --live-model data_store/models/trained/yolov8n_drone_best.pt
 ```
 
-In the browser, open `Live Detection`, then choose a named camera, pick an auto-scanned local USB/embedded camera, pick a media file from the scanned annotation folder, or enter a custom source. Use `Scan Local` to refresh local camera discovery. Tune confidence, FPS, frame-skip, image size, and device (`auto`, `mps`, `cpu`, `cuda`). The `Fast` preset raises requested FPS, skips frames, and lowers inference image size; `Quality` does the opposite.
+In the browser, open `Live Detection`, then choose a named camera, pick a cached local USB/embedded camera, pick a media file from the scanned annotation folder, or enter a custom source. Local camera discovery starts in the background at server startup when `data_store/system_config/local_cameras.json` is missing; later page loads use the saved camera list. Use `Scan Local` only when cameras are added/removed and you want to refresh that cache. Tune confidence, FPS, frame-skip, image size, and device (`auto`, `mps`, `cpu`, `cuda`). The `Fast` preset raises requested FPS, skips frames, and lowers inference image size; `Quality` does the opposite.
 
-Enable `Record` before pressing `Start` to save the streamed frames into the selected media folder for later annotation. Recordings use browser-playable H.264 MP4 files named `record_DDMM_HH:MM.mp4`; if a recording rolls over, later segments add `_02`, `_03`, and so on. Recording writes the resized, unannotated frames that are being processed by live detection, and the media list refreshes after recording stops.
+Enable `Record` before pressing `Start` to save the streamed frames into the selected media folder for later annotation. Recordings use browser-playable H.264 MP4 files named `record_DDMM_HH-MM.mp4`; if a recording rolls over, later segments add `_02`, `_03`, and so on. The hyphen keeps filenames valid on Windows. Recording writes the resized, unannotated frames that are being processed by live detection, and the media list refreshes after recording stops.
 
 Recording files are capped with segment rollover: the server targets a conservative 28 MiB rollover point under a 30 MiB maximum. This keeps individual clips small enough to sync and annotate comfortably while preserving longer sessions as multiple ordered segments.
 
@@ -388,7 +412,42 @@ YOLO_CONFIG_DIR=/private/tmp/ultralytics MPLCONFIGDIR=/private/tmp/matplotlib \
   --workers 0
 ```
 
-For real training later, first collect a reviewed train/val annotation set with enough positive and negative samples, then run the same script without `--smoke-from` and point `--data` at the reviewed dataset `data.yaml`.
+For real training, either point `--data` at a reviewed dataset snapshot, or let the script build a fresh snapshot from the annotation manifest. Snapshot modes are useful after recording/annotating new media:
+
+```bash
+# train from every annotated item
+YOLO_CONFIG_DIR=/private/tmp/ultralytics MPLCONFIGDIR=/private/tmp/matplotlib \
+.venv/bin/python scripts/train_yolov8n_drone.py \
+  --dataset-scope all \
+  --model data_store/models/trained/yolov8n_drone_best.pt \
+  --project data_store/models/trained/runs \
+  --name yolov8n_drone_incremental_all \
+  --output-model data_store/models/trained/yolov8n_drone_best.pt
+
+# train only annotations saved after the previous training metadata/model timestamp
+YOLO_CONFIG_DIR=/private/tmp/ultralytics MPLCONFIGDIR=/private/tmp/matplotlib \
+.venv/bin/python scripts/train_yolov8n_drone.py \
+  --dataset-scope since-last \
+  --model data_store/models/trained/yolov8n_drone_best.pt \
+  --project data_store/models/trained/runs \
+  --name yolov8n_drone_incremental_since_last \
+  --output-model data_store/models/trained/yolov8n_drone_best.pt
+
+# train annotations saved in a specific date range
+YOLO_CONFIG_DIR=/private/tmp/ultralytics MPLCONFIGDIR=/private/tmp/matplotlib \
+.venv/bin/python scripts/train_yolov8n_drone.py \
+  --dataset-scope date-range \
+  --from-date 2026-05-29 \
+  --to-date 2026-05-29 \
+  --model data_store/models/trained/yolov8n_drone_best.pt \
+  --project data_store/models/trained/runs \
+  --name yolov8n_drone_incremental_20260529 \
+  --output-model data_store/models/trained/yolov8n_drone_best.pt
+```
+
+Use `--prepare-only` with any snapshot mode to validate the selected data without launching YOLO training. Each completed training run writes `uav_training_metadata.json` inside the Ultralytics run folder and updates `data_store/models/trained/yolov8n_drone_best.meta.json`; `--dataset-scope since-last` uses that metadata as its cutoff. If the selected rows have no validation split, the script carves a small validation item from the selection so YOLO still has train and val folders.
+
+The web server also exposes these modes in the `Training` tab. Choose `Since last training`, `Date range`, or `All annotations`, keep `Prepare only` checked to validate the selected dataset, or clear it to launch training. The tab shows current state, elapsed time, approximate epoch progress, and a live training log tail. Only one training job runs at a time; `Stop` terminates the active process.
 
 Run the drone-specific YOLOv11x model from Hugging Face:
 
@@ -548,3 +607,10 @@ scripts/extract_frames.sh videos/test.mp4 frames/test 1
 
   - video stream source from client side - e.g. mobile client support
   - lower resolution / frame-step filter
+
+
+Demo feedback:
+1. Done: local camera enumeration is cached in `data_store/system_config/local_cameras.json`; startup only scans in the background when the cache is missing, and browser refreshes use the cache unless `Scan Local` is pressed.
+2. Done: Windows recording filenames now use `record_DDMM_HH-MM.mp4` because `:` is illegal in Windows paths.
+3. CLI added: incremental training can build snapshots for all annotations, annotations since the last training metadata/model timestamp, or an inclusive saved-at date range.
+4. Camera direction: prefer an outdoor IP camera with RTSP/H.264 for field use; for quick mobile tests, add a client-side `getUserMedia` phone/browser source that sends frames to the server.

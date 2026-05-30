@@ -12,7 +12,10 @@ import os
 import re
 import secrets
 import ssl
+import subprocess
 import sys
+import tempfile
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -76,6 +79,10 @@ def main() -> int:
     server.default_folder = resolve_user_path(args.default_folder)
     server.default_project_dir = resolve_user_path(args.project_dir)
     server.camera_config = resolve_user_path(args.camera_config)
+    server.local_camera_cache = PROJECT_ROOT / "data_store" / "system_config" / "local_cameras.json"
+    server.local_camera_scan_running = False
+    server.training_lock = threading.Lock()
+    server.training_job = None
     server.live_model = resolve_user_path(args.live_model)
     server.class_name = args.class_name
     server.auth_enabled = not args.no_auth
@@ -117,6 +124,7 @@ def main() -> int:
         print("WARNING: Basic Auth is disabled.")
     if scheme == "http" and args.host not in {"127.0.0.1", "localhost", "::1"}:
         print("WARNING: server is reachable over plain HTTP. Use --certfile/--keyfile for HTTPS.")
+    initialise_local_camera_cache(server)
     server.serve_forever()
     return 0
 
@@ -125,6 +133,10 @@ class AnnotationServer(ThreadingHTTPServer):
     default_folder: Path
     default_project_dir: Path
     camera_config: Path
+    local_camera_cache: Path
+    local_camera_scan_running: bool
+    training_lock: threading.Lock
+    training_job: dict[str, object] | None
     live_model: Path
     class_name: str
     auth_enabled: bool
@@ -164,12 +176,16 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/live/local-cameras":
             query = parse_qs(parsed.query)
             max_index = min(20, max(0, parse_int(query_value(query, "max_index", "5"))))
-            self.send_live_local_cameras(max_index)
+            refresh = parse_bool(query_value(query, "refresh", "0"))
+            self.send_live_local_cameras(max_index, refresh=refresh)
             return
         if parsed.path == "/api/live/events":
             query = parse_qs(parsed.query)
             limit = min(200, max(1, parse_int(query_value(query, "limit", "50"))))
             self.send_live_events(limit)
+            return
+        if parsed.path == "/api/training/status":
+            self.send_training_status()
             return
         if parsed.path == "/api/live/stream":
             query = parse_qs(parsed.query)
@@ -209,6 +225,13 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/save":
             payload = self.read_json()
             self.save_annotation(payload)
+            return
+        if parsed.path == "/api/training/start":
+            payload = self.read_json()
+            self.start_training_job(payload)
+            return
+        if parsed.path == "/api/training/stop":
+            self.stop_training_job()
             return
 
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
@@ -329,12 +352,16 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self.send_json({"error": str(exc), "cameras": []}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
-    def send_live_local_cameras(self, max_index: int) -> None:
+    def send_live_local_cameras(self, max_index: int, refresh: bool = False) -> None:
         try:
-            from app.sources import scan_local_cameras
-
-            cameras = scan_local_cameras(max_index)
-            self.send_json({"max_index": max_index, "cameras": cameras})
+            self.send_json(
+                load_or_scan_local_cameras(
+                    self.server.local_camera_cache,
+                    max_index,
+                    refresh=refresh,
+                    scan_running=self.server.local_camera_scan_running,
+                )
+            )
         except Exception as exc:
             self.send_json({"error": str(exc), "cameras": []}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -346,6 +373,23 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 "events": read_recent_live_events(events_root, limit),
             }
         )
+
+    def send_training_status(self) -> None:
+        self.send_json(training_status_payload(self.server))
+
+    def start_training_job(self, payload: dict[str, object]) -> None:
+        try:
+            status = start_training_process(self.server, payload)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        except RuntimeError as exc:
+            self.send_json({"error": str(exc), **training_status_payload(self.server)}, status=HTTPStatus.CONFLICT)
+            return
+        self.send_json(status)
+
+    def stop_training_job(self) -> None:
+        self.send_json(stop_training_process(self.server))
 
     def stream_live_detection(self, query: dict[str, list[str]]) -> None:
         source_value = query_value(query, "source", "0")
@@ -655,6 +699,101 @@ def local_display_host(host: str) -> str:
     if host == "::":
         return "[::1]"
     return host
+
+
+def initialise_local_camera_cache(server: AnnotationServer) -> None:
+    if server.local_camera_cache.exists():
+        print(f"Local camera cache: {server.local_camera_cache}")
+        return
+
+    print("Local camera cache missing. Background local camera scan started.")
+    server.local_camera_scan_running = True
+    thread = threading.Thread(target=startup_local_camera_scan, args=(server,), daemon=True)
+    thread.start()
+
+
+def startup_local_camera_scan(server: AnnotationServer) -> None:
+    try:
+        payload = scan_and_save_local_camera_cache(server.local_camera_cache, max_index=5)
+    except Exception as exc:
+        print(f"WARNING: local camera startup scan failed: {exc}")
+    else:
+        print(f"Local camera cache saved: {len(payload.get('cameras', []))} cameras")
+    finally:
+        server.local_camera_scan_running = False
+
+
+def load_or_scan_local_cameras(
+    cache_path: Path,
+    max_index: int,
+    refresh: bool = False,
+    scan_running: bool = False,
+) -> dict[str, object]:
+    if scan_running:
+        cached = read_local_camera_cache(cache_path)
+        if cached is not None:
+            cached["source"] = "cache"
+            cached["cache_path"] = str(cache_path)
+            cached["scan_running"] = True
+            return cached
+        return {
+            "source": "scanning",
+            "cache_path": str(cache_path),
+            "max_index": max_index,
+            "cameras": [],
+            "scan_running": True,
+            "message": "Local camera discovery is running in the background.",
+        }
+
+    if refresh:
+        return scan_and_save_local_camera_cache(cache_path, max_index=max_index)
+
+    cached = read_local_camera_cache(cache_path)
+    if cached is not None:
+        cached["source"] = "cache"
+        cached["cache_path"] = str(cache_path)
+        return cached
+
+    return {
+        "source": "missing",
+        "cache_path": str(cache_path),
+        "max_index": max_index,
+        "cameras": [],
+        "message": "Local camera cache does not exist. Use Scan Local to refresh it.",
+    }
+
+
+def scan_and_save_local_camera_cache(cache_path: Path, max_index: int) -> dict[str, object]:
+    from app.sources import scan_local_cameras
+
+    cameras = scan_local_cameras(max_index)
+    payload: dict[str, object] = {
+        "source": "scan",
+        "cache_path": str(cache_path),
+        "generated_at": datetime.now().astimezone().isoformat(),
+        "max_index": max_index,
+        "cameras": cameras,
+    }
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = cache_path.with_suffix(f"{cache_path.suffix}.tmp")
+    temporary_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    temporary_path.replace(cache_path)
+    return payload
+
+
+def read_local_camera_cache(cache_path: Path) -> dict[str, object] | None:
+    if not cache_path.exists():
+        return None
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    cameras = payload.get("cameras")
+    if not isinstance(cameras, list):
+        payload["cameras"] = []
+    return payload
 
 
 def guess_content_type(path: Path) -> str:
@@ -972,13 +1111,273 @@ def resize_frame(frame, max_width: int, max_height: int):
     return cv2.resize(frame, new_size, interpolation=cv2.INTER_AREA)
 
 
+def start_training_process(server: AnnotationServer, payload: dict[str, object]) -> dict[str, object]:
+    scope = str(payload.get("dataset_scope") or "since-last").strip()
+    if scope not in {"all", "since-last", "date-range"}:
+        raise ValueError("dataset_scope must be all, since-last, or date-range")
+
+    with server.training_lock:
+        existing = server.training_job
+        if existing and existing.get("status") in {"starting", "running", "stopping"}:
+            process = existing.get("process")
+            if process is not None and getattr(process, "poll")() is None:
+                raise RuntimeError("Training job is already running")
+
+    project_dir = resolve_user_path(str(payload.get("project_dir") or server.default_project_dir))
+    model_path = resolve_user_path(str(payload.get("model") or server.live_model))
+    output_model = resolve_user_path(str(payload.get("output_model") or server.live_model))
+    run_project = resolve_user_path(str(payload.get("run_project") or "data_store/models/trained/runs"))
+    snapshot_root = resolve_user_path(str(payload.get("snapshot_root") or "data_store/datasets/training_snapshots"))
+    metadata_path = output_model.with_suffix(".meta.json")
+    epochs = clamp_int(payload.get("epochs"), 1, 300, 25)
+    imgsz = clamp_int(payload.get("imgsz"), 256, 1536, 640)
+    batch = clamp_int(payload.get("batch"), 1, 128, 8)
+    workers = clamp_int(payload.get("workers"), 0, 16, 0)
+    patience = clamp_int(payload.get("patience"), 1, 100, 8)
+    device = str(payload.get("device") or "").strip()
+    prepare_only = parse_bool(payload.get("prepare_only"))
+    from_date = str(payload.get("from_date") or "").strip()
+    to_date = str(payload.get("to_date") or "").strip()
+    if scope == "date-range" and not (from_date or to_date):
+        raise ValueError("date-range training requires from_date, to_date, or both")
+
+    stamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+    job_id = f"train_{stamp}_{uuid.uuid4().hex[:8]}"
+    name = safe_name(str(payload.get("name") or f"yolov8n_drone_{scope}_{stamp}"))
+    log_dir = PROJECT_ROOT / "data_store" / "models" / "trained" / "runs" / "_web_jobs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{job_id}.log"
+
+    command = [
+        sys.executable,
+        "scripts/train_yolov8n_drone.py",
+        "--dataset-scope",
+        scope,
+        "--project-dir",
+        portable_path(project_dir),
+        "--model",
+        portable_path(model_path),
+        "--epochs",
+        str(epochs),
+        "--imgsz",
+        str(imgsz),
+        "--batch",
+        str(batch),
+        "--workers",
+        str(workers),
+        "--patience",
+        str(patience),
+        "--project",
+        portable_path(run_project),
+        "--name",
+        name,
+        "--output-model",
+        portable_path(output_model),
+        "--snapshot-root",
+        portable_path(snapshot_root),
+        "--last-training-metadata",
+        portable_path(metadata_path),
+    ]
+    if device:
+        command.extend(["--device", device])
+    if from_date:
+        command.extend(["--from-date", from_date])
+    if to_date:
+        command.extend(["--to-date", to_date])
+    if prepare_only:
+        command.append("--prepare-only")
+
+    env = os.environ.copy()
+    temp_root = Path(tempfile.gettempdir())
+    env.setdefault("YOLO_CONFIG_DIR", str(temp_root / "ultralytics"))
+    env.setdefault("MPLCONFIGDIR", str(temp_root / "matplotlib"))
+    Path(env["YOLO_CONFIG_DIR"]).mkdir(parents=True, exist_ok=True)
+    Path(env["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
+
+    with log_path.open("ab") as handle:
+        handle.write(f"$ {subprocess.list2cmdline(command)}\n\n".encode("utf-8"))
+        handle.flush()
+        process = subprocess.Popen(
+            command,
+            cwd=PROJECT_ROOT,
+            env=env,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+        )
+
+    job: dict[str, object] = {
+        "id": job_id,
+        "status": "running",
+        "started_at": datetime.now().astimezone().isoformat(),
+        "ended_at": "",
+        "returncode": None,
+        "stop_requested": False,
+        "dataset_scope": scope,
+        "prepare_only": prepare_only,
+        "from_date": from_date,
+        "to_date": to_date,
+        "epochs": epochs,
+        "imgsz": imgsz,
+        "batch": batch,
+        "device": device or "auto",
+        "project_dir": portable_path(project_dir),
+        "model": portable_path(model_path),
+        "output_model": portable_path(output_model),
+        "run_project": portable_path(run_project),
+        "snapshot_root": portable_path(snapshot_root),
+        "metadata_path": portable_path(metadata_path),
+        "name": name,
+        "log_path": portable_path(log_path),
+        "command": command,
+        "process": process,
+    }
+    with server.training_lock:
+        server.training_job = job
+
+    thread = threading.Thread(target=watch_training_process, args=(server, job_id), daemon=True)
+    thread.start()
+    return training_status_payload(server)
+
+
+def watch_training_process(server: AnnotationServer, job_id: str) -> None:
+    with server.training_lock:
+        job = server.training_job if server.training_job and server.training_job.get("id") == job_id else None
+        process = job.get("process") if job else None
+    if process is None:
+        return
+
+    returncode = process.wait()
+    with server.training_lock:
+        job = server.training_job if server.training_job and server.training_job.get("id") == job_id else None
+        if job is None:
+            return
+        finish_training_job_locked(job, returncode)
+
+
+def stop_training_process(server: AnnotationServer) -> dict[str, object]:
+    with server.training_lock:
+        job = server.training_job
+        if not job:
+            return training_status_payload_from_job(None)
+        process = job.get("process")
+        if job.get("status") not in {"running", "starting"} or process is None or getattr(process, "poll")() is not None:
+            return training_status_payload_from_job(job)
+        job["status"] = "stopping"
+        job["stop_requested"] = True
+        try:
+            getattr(process, "terminate")()
+        except OSError as exc:
+            job["status"] = "error"
+            job["error"] = str(exc)
+        return training_status_payload_from_job(job)
+
+
+def training_status_payload(server: AnnotationServer) -> dict[str, object]:
+    with server.training_lock:
+        job = server.training_job
+        if job and job.get("status") in {"running", "starting", "stopping"}:
+            process = job.get("process")
+            if process is not None:
+                returncode = getattr(process, "poll")()
+                if returncode is not None:
+                    finish_training_job_locked(job, returncode)
+        return training_status_payload_from_job(job)
+
+
+def training_status_payload_from_job(job: dict[str, object] | None) -> dict[str, object]:
+    if not job:
+        return {
+            "job": None,
+            "status": "idle",
+            "running": False,
+            "log": "",
+            "progress": {"current": 0, "total": 0, "percent": 0},
+        }
+
+    public = {key: value for key, value in job.items() if key != "process"}
+    log_path = resolve_user_path(str(job.get("log_path") or ""))
+    log_tail = read_text_tail(log_path)
+    progress = parse_training_progress(log_tail, int(job.get("epochs") or 0), str(job.get("status") or ""))
+    started_at = parse_datetime_for_elapsed(str(job.get("started_at") or ""))
+    ended_at = parse_datetime_for_elapsed(str(job.get("ended_at") or ""))
+    if started_at:
+        end = ended_at or datetime.now().astimezone()
+        public["elapsed_seconds"] = round((end - started_at).total_seconds(), 1)
+    return {
+        "job": public,
+        "status": public.get("status", "unknown"),
+        "running": public.get("status") in {"starting", "running", "stopping"},
+        "log": log_tail,
+        "progress": progress,
+    }
+
+
+def finish_training_job_locked(job: dict[str, object], returncode: int) -> None:
+    job["returncode"] = returncode
+    job["ended_at"] = datetime.now().astimezone().isoformat()
+    if job.get("stop_requested"):
+        job["status"] = "stopped"
+    elif returncode == 0:
+        job["status"] = "completed"
+    else:
+        job["status"] = "failed"
+
+
+def read_text_tail(path: Path, max_bytes: int = 32 * 1024) -> str:
+    if not path.exists() or not path.is_file():
+        return ""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            if size > max_bytes:
+                handle.seek(size - max_bytes)
+            return handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def parse_training_progress(log_text: str, epochs: int, status: str) -> dict[str, object]:
+    if status == "completed":
+        return {"current": epochs, "total": epochs, "percent": 100 if epochs else 100}
+    matches = list(re.finditer(r"(?:^|[\r\n])\s*(\d{1,4})/(\d{1,4})(?=\s)", log_text))
+    if not matches:
+        matches = list(re.finditer(r"Epoch\s+(\d{1,4})/(\d{1,4})", log_text, flags=re.IGNORECASE))
+    if matches:
+        current = int(matches[-1].group(1))
+        total = int(matches[-1].group(2))
+    else:
+        current = 0
+        total = epochs
+    percent = round((current / total) * 100, 1) if total else 0
+    return {"current": current, "total": total, "percent": min(100, max(0, percent))}
+
+
+def parse_datetime_for_elapsed(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    return parsed
+
+
+def clamp_int(value: object, minimum: int, maximum: int, default: int) -> int:
+    parsed = parse_int(value)
+    if parsed <= 0 and default > 0:
+        parsed = default
+    return min(maximum, max(minimum, parsed))
+
+
 class StreamRecorder:
     def __init__(self, output_dir: Path, fps: float, max_bytes: int, rollover_bytes: int) -> None:
         self.output_dir = output_dir
         self.fps = max(1.0, min(float(fps or 5.0), 30.0))
         self.max_bytes = max(1, max_bytes)
         self.rollover_bytes = min(max(1, rollover_bytes), self.max_bytes)
-        self.stamp = datetime.now().strftime("record_%d%m_%H:%M")
+        self.stamp = datetime.now().strftime("record_%d%m_%H-%M")
         self.segment_index = 0
         self.writer = None
         self.current_path: Path | None = None
