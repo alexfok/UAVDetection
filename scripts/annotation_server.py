@@ -408,6 +408,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         max_height = max(0, parse_int(query_value(query, "max_height", "720")))
         jpeg_quality = min(95, max(35, parse_int(query_value(query, "quality", "80"))))
         record_enabled = parse_bool(query_value(query, "record", "0"))
+        record_labels = parse_bool(query_value(query, "record_labels", "0"))
         record_dir = resolve_user_path(query_value(query, "record_dir", str(self.server.default_folder)))
         record_max_bytes = min(
             RECORDING_MAX_BYTES,
@@ -487,6 +488,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 "max_height": max_height,
                 "jpeg_quality": jpeg_quality,
                 "recording_enabled": record_enabled,
+                "recording_labels": record_labels,
                 "recording_max_mb": round(record_max_bytes / 1024 / 1024, 1),
             },
         )
@@ -498,8 +500,14 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 event_logger.log_recording_skipped("image source does not need stream recording")
             else:
                 try:
-                    recorder = StreamRecorder(record_dir, max_fps, record_max_bytes, record_rollover_bytes)
-                    event_logger.log_recording_started(record_dir, record_max_bytes)
+                    recorder = StreamRecorder(
+                        record_dir,
+                        max_fps,
+                        record_max_bytes,
+                        record_rollover_bytes,
+                        name_suffix="_labeled" if record_labels else "",
+                    )
+                    event_logger.log_recording_started(record_dir, record_max_bytes, record_labels)
                 except OSError as exc:
                     event_logger.log_error(f"recording disabled: {exc}")
         try:
@@ -524,18 +532,18 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 last_frame_at = time.monotonic()
 
                 frame = resize_frame(frame, max_width, max_height)
-                if recorder is not None:
-                    try:
-                        recorder.write(frame)
-                    except Exception as exc:
-                        event_logger.log_error(f"recording disabled: {exc}")
-                        recorder.close()
-                        recorder = None
                 detections = detector.detect(frame)
                 tracks = tracker.update(detections, time.monotonic())
                 alert = alert_manager.update(tracks, time.monotonic())
                 fps = fps_meter.update()
                 annotated = ui.draw(frame, tracks, alert, fps, source.label)
+                if recorder is not None:
+                    try:
+                        recorder.write(annotated if record_labels else frame)
+                    except Exception as exc:
+                        event_logger.log_error(f"recording disabled: {exc}")
+                        recorder.close()
+                        recorder = None
 
                 ok, encoded = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
                 if not ok:
@@ -564,7 +572,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         finally:
             if recorder is not None:
                 for segment in recorder.close():
-                    event_logger.log_recording_saved(segment["path"], int(segment["size_bytes"]))
+                    event_logger.log_recording_saved(segment["path"], int(segment["size_bytes"]), record_labels)
             cap.release()
             event_logger.log_stop(stop_reason, frame_index)
 
@@ -1372,12 +1380,20 @@ def clamp_int(value: object, minimum: int, maximum: int, default: int) -> int:
 
 
 class StreamRecorder:
-    def __init__(self, output_dir: Path, fps: float, max_bytes: int, rollover_bytes: int) -> None:
+    def __init__(
+        self,
+        output_dir: Path,
+        fps: float,
+        max_bytes: int,
+        rollover_bytes: int,
+        name_suffix: str = "",
+    ) -> None:
         self.output_dir = output_dir
         self.fps = max(1.0, min(float(fps or 5.0), 30.0))
         self.max_bytes = max(1, max_bytes)
         self.rollover_bytes = min(max(1, rollover_bytes), self.max_bytes)
-        self.stamp = datetime.now().strftime("record_%d%m_%H-%M")
+        suffix = re.sub(r"[^A-Za-z0-9_.-]+", "_", name_suffix)
+        self.stamp = f"{datetime.now().strftime('record_%d%m_%H-%M')}{suffix}"
         self.segment_index = 0
         self.writer = None
         self.current_path: Path | None = None
@@ -1536,23 +1552,25 @@ class LiveEventLogger:
     def log_error(self, message: str) -> None:
         self._append({"event_type": "error", "message": message})
 
-    def log_recording_started(self, output_dir: Path, max_bytes: int) -> None:
+    def log_recording_started(self, output_dir: Path, max_bytes: int, labels: bool = False) -> None:
         self._append(
             {
                 "event_type": "recording_started",
                 "message": f"recording to {portable_path(output_dir)}",
                 "recording_dir": portable_path(output_dir),
                 "max_size_mb": round(max_bytes / 1024 / 1024, 1),
+                "labels": labels,
             }
         )
 
-    def log_recording_saved(self, path: Path, size_bytes: int) -> None:
+    def log_recording_saved(self, path: Path, size_bytes: int, labels: bool = False) -> None:
         self._append(
             {
                 "event_type": "recording_saved",
                 "message": f"saved {portable_path(path)}",
                 "recording_path": portable_path(path),
                 "size_bytes": size_bytes,
+                "labels": labels,
             }
         )
 

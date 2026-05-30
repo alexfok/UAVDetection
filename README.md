@@ -370,7 +370,7 @@ python3 scripts/annotation_server.py \
 
 In the browser, open `Live Detection`, then choose a named camera, pick a cached local USB/embedded camera, pick a media file from the scanned annotation folder, or enter a custom source. Local camera discovery starts in the background at server startup when `data_store/system_config/local_cameras.json` is missing; later page loads use the saved camera list. Use `Scan Local` only when cameras are added/removed and you want to refresh that cache. Tune confidence, FPS, frame-skip, image size, and device (`auto`, `mps`, `cpu`, `cuda`). The `Fast` preset raises requested FPS, skips frames, and lowers inference image size; `Quality` does the opposite.
 
-Enable `Record` before pressing `Start` to save the streamed frames into the selected media folder for later annotation. Recordings use browser-playable H.264 MP4 files named `record_DDMM_HH-MM.mp4`; if a recording rolls over, later segments add `_02`, `_03`, and so on. The hyphen keeps filenames valid on Windows. Recording writes the resized, unannotated frames that are being processed by live detection, and the media list refreshes after recording stops.
+Enable `Record` before pressing `Start` to save the streamed frames into the selected media folder. Keep `Labels` checked to create shareable demo clips with the same detection boxes and object labels shown in Live Detection; uncheck `Labels` to save raw resized frames for later annotation. Recordings use browser-playable H.264 MP4 files named `record_DDMM_HH-MM.mp4`; labeled demo clips add `_labeled` before the extension. If a recording rolls over, later segments add `_02`, `_03`, and so on. The hyphen keeps filenames valid on Windows, and the media list refreshes after recording stops.
 
 Recording files are capped with segment rollover: the server targets a conservative 28 MiB rollover point under a 30 MiB maximum. This keeps individual clips small enough to sync and annotate comfortably while preserving longer sessions as multiple ordered segments.
 
@@ -381,7 +381,7 @@ data_store/detection_results/live_events/YYYY-MM-DD/events.jsonl
 data_store/detection_results/live_events/YYYY-MM-DD/frames/<session_id>/*.jpg
 ```
 
-Event types include `start`, `stop`, `drone_detected`, `recording_started`, `recording_saved`, `recording_skipped`, and `error`.
+Event types include `start`, `stop`, `drone_detected`, `recording_started`, `recording_saved`, `recording_skipped`, and `error`. `drone_detected` rows include `tracks` with bounding boxes, object labels, confidence, and track IDs; recording events include whether the saved clip is a labeled demo or raw recording.
 
 Saved annotations are written as a YOLO dataset:
 

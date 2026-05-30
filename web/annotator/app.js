@@ -77,6 +77,7 @@ const els = {
   liveImageSizeInput: document.getElementById("liveImageSizeInput"),
   liveDeviceSelect: document.getElementById("liveDeviceSelect"),
   liveRecordInput: document.getElementById("liveRecordInput"),
+  liveRecordLabelsInput: document.getElementById("liveRecordLabelsInput"),
   liveStartButton: document.getElementById("liveStartButton"),
   liveStopButton: document.getElementById("liveStopButton"),
   liveVideoPreview: document.getElementById("liveVideoPreview"),
@@ -387,10 +388,15 @@ function startLiveDetection() {
   state.liveRecording = els.liveRecordInput.checked;
   els.liveStartButton.disabled = true;
   els.liveRecordInput.disabled = true;
+  els.liveRecordLabelsInput.disabled = true;
   els.liveTitle.textContent = liveSourceLabel();
   setLiveStatus(state.liveRecording ? "Starting stream and recording..." : "Starting stream...");
   if (state.liveRecording) {
-    showNotification("Recording started", "info", 2500);
+    showNotification(
+      els.liveRecordLabelsInput.checked ? "Labeled demo recording started" : "Raw recording started",
+      "info",
+      2500,
+    );
   }
   window.setTimeout(refreshLiveEvents, 500);
 }
@@ -404,6 +410,7 @@ function stopLiveDetection(options = {}) {
   els.liveStream.style.display = "none";
   els.liveStartButton.disabled = false;
   els.liveRecordInput.disabled = false;
+  els.liveRecordLabelsInput.disabled = false;
   if (restorePreview) {
     const selectedMedia = selectedLiveMediaItem();
     if (selectedMedia) {
@@ -453,6 +460,9 @@ function liveStreamUrl() {
     params.set("record", "1");
     params.set("record_dir", els.folderInput.value);
     params.set("record_max_mb", "30");
+    if (els.liveRecordLabelsInput.checked) {
+      params.set("record_labels", "1");
+    }
   }
   params.set("_", Date.now().toString());
   return `/api/live/stream?${params.toString()}`;
@@ -1092,10 +1102,10 @@ function eventDetailText(type, event, best) {
     return `${event.source_kind || "source"} · ${settings.device || "auto"} · ${settings.image_size || "img"}px`;
   }
   if (type === "recording_started") {
-    return `${event.max_size_mb || 30} MB max segment`;
+    return `${event.labels ? "labeled demo" : "raw"} · ${event.max_size_mb || 30} MB max segment`;
   }
   if (type === "recording_saved") {
-    return `${formatBytes(Number(event.size_bytes || 0))} · ${shortSource(event.recording_path || "")}`;
+    return `${event.labels ? "labeled demo" : "raw"} · ${formatBytes(Number(event.size_bytes || 0))} · ${shortSource(event.recording_path || "")}`;
   }
   return String(event.message || event.reason || "");
 }
