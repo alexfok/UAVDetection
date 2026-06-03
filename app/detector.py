@@ -23,6 +23,11 @@ class DroneDetector:
         self.target_class_ids = self._resolve_target_classes(config.target_classes)
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
+        return self.detect_batch([frame])[0]
+
+    def detect_batch(self, frames: list[np.ndarray]) -> list[list[Detection]]:
+        if not frames:
+            return []
         predict_args = {
             "conf": self.config.confidence_threshold,
             "iou": self.config.iou_threshold,
@@ -34,11 +39,17 @@ class DroneDetector:
         if self.target_class_ids:
             predict_args["classes"] = self.target_class_ids
 
-        results = self.model.predict(frame, **predict_args)
+        results = self.model.predict(frames, **predict_args)
         if not results:
-            return []
+            return [[] for _frame in frames]
 
-        boxes = results[0].boxes
+        detections_by_frame = [self._detections_from_result(result) for result in results]
+        if len(detections_by_frame) < len(frames):
+            detections_by_frame.extend([[] for _frame in frames[len(detections_by_frame) :]])
+        return detections_by_frame[: len(frames)]
+
+    def _detections_from_result(self, result: object) -> list[Detection]:
+        boxes = getattr(result, "boxes", None)
         if boxes is None or len(boxes) == 0:
             return []
 

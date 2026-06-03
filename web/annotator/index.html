@@ -77,7 +77,7 @@
 
           <div class="mediaListHeader">
             <span>Raw data</span>
-            <span>Annotated frames</span>
+            <button id="removeSelectedMediaButton" type="button">Remove Selected</button>
           </div>
           <div id="mediaList" class="mediaList"></div>
         </aside>
@@ -119,12 +119,19 @@
           <section id="liveTab" class="modeToolbar">
             <header class="topbar detectionBar">
               <div class="field medium">
-                <label for="liveCameraSelect">Camera source</label>
-                <select id="liveCameraSelect">
-                  <option value="">Custom source</option>
+                <label for="liveCameraSelect">Camera sources</label>
+                <select id="liveCameraSelect" multiple size="4"></select>
+              </div>
+              <div class="field small">
+                <label for="liveCameraProfileSelect">Camera stream</label>
+                <select id="liveCameraProfileSelect">
+                  <option value="preview" selected>Preview</option>
+                  <option value="main">Main</option>
                 </select>
               </div>
+              <button id="liveClearCamerasButton" type="button">Clear Cameras</button>
               <button id="liveScanLocalButton" type="button">Scan Local</button>
+              <button id="liveClearMediaButton" type="button">Unselect Media</button>
               <div class="field grow">
                 <label for="liveSourceInput">Source</label>
                 <input id="liveSourceInput" type="text" spellcheck="false" placeholder="0, usb:1, rtsp://..., video/image path">
@@ -134,8 +141,12 @@
                 <input id="liveConfInput" type="number" min="0.05" max="0.95" step="0.05" value="0.5">
               </div>
               <div class="field tiny">
-                <label for="liveFpsInput">FPS</label>
-                <input id="liveFpsInput" type="number" min="0.5" max="30" step="0.5" value="5">
+                <label for="livePreviewFpsInput">Preview FPS</label>
+                <input id="livePreviewFpsInput" type="number" min="0.5" max="30" step="0.5" value="6">
+              </div>
+              <div class="field tiny">
+                <label for="liveDetectionFpsInput">Detect FPS</label>
+                <input id="liveDetectionFpsInput" type="number" min="0.1" max="30" step="0.1" value="2">
               </div>
               <div class="field tiny">
                 <label for="liveFrameSkipInput">Skip</label>
@@ -153,6 +164,19 @@
               <div class="field tiny">
                 <label for="liveImageSizeInput">Image size</label>
                 <input id="liveImageSizeInput" type="number" min="256" max="1280" step="32" value="640">
+              </div>
+              <div class="field small">
+                <label for="livePreviewSizeSelect">Preview</label>
+                <select id="livePreviewSizeSelect">
+                  <option value="854x480">480p</option>
+                  <option value="1280x720" selected>720p</option>
+                  <option value="1920x1080">1080p</option>
+                  <option value="0x0">Native</option>
+                </select>
+              </div>
+              <div class="field tiny">
+                <label for="liveJpegQualityInput">Quality</label>
+                <input id="liveJpegQualityInput" type="number" min="35" max="95" step="5" value="75">
               </div>
               <div class="field small">
                 <label for="liveDeviceSelect">Device</label>
@@ -250,6 +274,7 @@
               <video id="liveVideoPreview" controls playsinline></video>
               <img id="liveImagePreview" alt="">
               <img id="liveStream" alt="">
+              <div id="liveStreamGrid" class="liveStreamGrid"></div>
               <div id="livePlaceholder" class="livePlaceholder">Select a source and start detection</div>
             </div>
           </div>
@@ -303,7 +328,10 @@
               <strong>Recent events</strong>
               <span id="liveEventsUpdatedAt" class="panelMeta">Events not loaded</span>
             </div>
-            <button id="liveRefreshEventsButton" type="button">Refresh</button>
+            <div class="panelActions">
+              <button id="liveRemoveEventsButton" type="button">Remove Selected</button>
+              <button id="liveRefreshEventsButton" type="button">Refresh</button>
+            </div>
           </div>
           <div id="liveEventList" class="eventList"></div>
         </aside>

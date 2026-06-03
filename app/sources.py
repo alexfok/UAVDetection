@@ -36,9 +36,12 @@ class CameraEntry:
     address: str = ""
     url: str = ""
     url_env: str = ""
+    preview_url: str = ""
+    preview_url_env: str = ""
     protocol: str = "rtsp"
     rtsp_port: int = 554
     rtsp_path: str = ""
+    preview_rtsp_path: str = ""
     username: str = ""
     password: str = ""
     username_env: str = ""
@@ -80,8 +83,9 @@ def resolve_source(source: str | int, camera_config: str | Path | None = None) -
         raise ValueError("Video source is empty.")
 
     if text.startswith("camera:"):
-        camera_id = text.split(":", 1)[1].strip()
-        return resolve_camera(camera_id, camera_config)
+        camera_ref = text.split(":", 1)[1].strip()
+        camera_id, profile = split_camera_profile(camera_ref)
+        return resolve_camera(camera_id, camera_config, profile=profile)
 
     if text in {"embedded", "usb"}:
         return SourceSpec(capture_source=0, label=text, kind="camera")
@@ -102,7 +106,7 @@ def resolve_source(source: str | int, camera_config: str | Path | None = None) -
     return SourceSpec(capture_source=text, label=redact_source(text), kind=guess_stream_kind(text))
 
 
-def resolve_camera(camera_id: str, camera_config: str | Path | None = None) -> SourceSpec:
+def resolve_camera(camera_id: str, camera_config: str | Path | None = None, profile: str = "main") -> SourceSpec:
     entries = load_camera_entries(camera_config)
     entry = entries.get(normalise_camera_id(camera_id))
     if entry is None:
@@ -111,10 +115,12 @@ def resolve_camera(camera_id: str, camera_config: str | Path | None = None) -> S
     if not entry.enabled:
         raise ValueError(f"Camera '{camera_id}' is disabled in the camera config.")
 
-    url = camera_url(entry)
+    url = camera_url(entry, profile=profile)
     label = entry.name or entry.camera_id
     if entry.address:
         label = f"{label} ({entry.address})"
+    if profile and profile != "main":
+        label = f"{label} [{profile}]"
     return SourceSpec(capture_source=url, label=label, kind="rtsp")
 
 
@@ -154,9 +160,12 @@ def load_camera_entries(camera_config: str | Path | None = None) -> dict[str, Ca
             address=str(merged.get("address") or ""),
             url=str(merged.get("url") or ""),
             url_env=str(merged.get("url_env") or ""),
+            preview_url=str(merged.get("preview_url") or ""),
+            preview_url_env=str(merged.get("preview_url_env") or ""),
             protocol=str(merged.get("protocol") or "rtsp").lower(),
             rtsp_port=int(merged.get("rtsp_port") or merged.get("port") or 554),
             rtsp_path=str(merged.get("rtsp_path") or ""),
+            preview_rtsp_path=str(merged.get("preview_rtsp_path") or ""),
             username=str(merged.get("username") or ""),
             password=str(merged.get("password") or ""),
             username_env=str(merged.get("username_env") or ""),
@@ -168,7 +177,15 @@ def load_camera_entries(camera_config: str | Path | None = None) -> dict[str, Ca
     return entries
 
 
-def camera_url(entry: CameraEntry) -> str:
+def camera_url(entry: CameraEntry, profile: str = "main") -> str:
+    if profile == "preview":
+        if entry.preview_url_env:
+            env_value = os.environ.get(entry.preview_url_env)
+            if env_value:
+                return env_value
+        if entry.preview_url:
+            return os.path.expandvars(entry.preview_url)
+
     if entry.url_env:
         env_value = os.environ.get(entry.url_env)
         if env_value:
@@ -196,10 +213,42 @@ def camera_url(entry: CameraEntry) -> str:
             credentials += f":{quote(password, safe='')}"
         credentials += "@"
 
-    path = entry.rtsp_path or ""
+    path = camera_rtsp_path(entry, profile)
     if path and not path.startswith("/"):
         path = f"/{path}"
     return f"rtsp://{credentials}{entry.address}:{entry.rtsp_port}{path}"
+
+
+def camera_rtsp_path(entry: CameraEntry, profile: str = "main") -> str:
+    if profile == "preview":
+        if entry.preview_rtsp_path:
+            return entry.preview_rtsp_path
+        if entry.rtsp_path:
+            inferred = infer_preview_rtsp_path(entry.rtsp_path)
+            if inferred:
+                return inferred
+    return entry.rtsp_path or ""
+
+
+def infer_preview_rtsp_path(path: str) -> str:
+    if "subtype=0" in path:
+        return path.replace("subtype=0", "subtype=1", 1)
+    if path.rstrip("/").endswith("101"):
+        return f"{path.rstrip('/')[:-3]}102"
+    return ""
+
+
+def split_camera_profile(camera_ref: str) -> tuple[str, str]:
+    if "?" not in camera_ref:
+        return camera_ref, "main"
+    camera_id, query = camera_ref.split("?", 1)
+    profile = "main"
+    for part in query.split("&"):
+        key, _, value = part.partition("=")
+        if key.strip().lower() == "profile" and value.strip():
+            profile = value.strip().lower()
+            break
+    return camera_id, profile
 
 
 def camera_summary(camera_config: str | Path | None = None) -> list[str]:
@@ -224,6 +273,8 @@ def open_source_capture(source: SourceSpec):
     if source.is_image:
         return ImageCapture(source.capture_source)
     quiet_opencv_logging(cv2)
+    if source.kind == "rtsp":
+        os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|stimeout;5000000")
     if has_url_credentials(source.capture_source):
         with suppress_native_stderr():
             return cv2.VideoCapture(source.capture_source)
@@ -383,10 +434,13 @@ CAMERA_FIELDS = {
     "address",
     "url",
     "url_env",
+    "preview_url",
+    "preview_url_env",
     "protocol",
     "rtsp_port",
     "port",
     "rtsp_path",
+    "preview_rtsp_path",
     "username",
     "password",
     "username_env",

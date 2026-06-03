@@ -11,6 +11,7 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
 import ssl
 import subprocess
 import sys
@@ -83,6 +84,8 @@ def main() -> int:
     server.local_camera_scan_running = False
     server.training_lock = threading.Lock()
     server.training_job = None
+    server.detector_cache_lock = threading.Lock()
+    server.detector_cache = {}
     server.live_model = resolve_user_path(args.live_model)
     server.class_name = args.class_name
     server.auth_enabled = not args.no_auth
@@ -125,6 +128,7 @@ def main() -> int:
     if scheme == "http" and args.host not in {"127.0.0.1", "localhost", "::1"}:
         print("WARNING: server is reachable over plain HTTP. Use --certfile/--keyfile for HTTPS.")
     initialise_local_camera_cache(server)
+    threading.Thread(target=prewarm_live_detector, args=(server,), daemon=True).start()
     server.serve_forever()
     return 0
 
@@ -137,11 +141,106 @@ class AnnotationServer(ThreadingHTTPServer):
     local_camera_scan_running: bool
     training_lock: threading.Lock
     training_job: dict[str, object] | None
+    detector_cache_lock: threading.Lock
+    detector_cache: dict[tuple[object, ...], object]
     live_model: Path
     class_name: str
     auth_enabled: bool
     auth_username: str
     auth_password: str
+
+
+class SharedDetector:
+    def __init__(self, detector: object) -> None:
+        self.detector = detector
+        self.condition = threading.Condition()
+        self.pending = []
+        self.batch_window_seconds = 0.015
+        self.worker = threading.Thread(target=self._run_batches, daemon=True)
+        self.worker.start()
+
+    def detect(self, frame):
+        request = DetectionBatchRequest(frame)
+        with self.condition:
+            self.pending.append(request)
+            self.condition.notify()
+        request.done.wait()
+        if request.error is not None:
+            raise request.error
+        return request.result or []
+
+    def _run_batches(self) -> None:
+        while True:
+            with self.condition:
+                while not self.pending:
+                    self.condition.wait()
+                deadline = time.monotonic() + self.batch_window_seconds
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    self.condition.wait(timeout=remaining)
+                requests = self.pending
+                self.pending = []
+
+            frames = [request.frame for request in requests]
+            try:
+                if hasattr(self.detector, "detect_batch"):
+                    results = self.detector.detect_batch(frames)
+                else:
+                    results = [self.detector.detect(frame) for frame in frames]
+                if len(results) < len(requests):
+                    results = list(results) + [[] for _request in requests[len(results) :]]
+                for request, result in zip(requests, results):
+                    request.result = result
+                    request.done.set()
+            except Exception as exc:
+                for request in requests:
+                    request.error = exc
+                    request.done.set()
+
+
+class DetectionBatchRequest:
+    def __init__(self, frame: object) -> None:
+        self.frame = frame
+        self.done = threading.Event()
+        self.result = None
+        self.error = None
+
+
+def detector_cache_key(config: object) -> tuple[object, ...]:
+    label_aliases = getattr(config, "label_aliases", {}) or {}
+    target_classes = getattr(config, "target_classes", []) or []
+    return (
+        str(getattr(config, "model_path", "")),
+        float(getattr(config, "confidence_threshold", 0.5)),
+        float(getattr(config, "iou_threshold", 0.45)),
+        int(getattr(config, "image_size", 640)),
+        str(getattr(config, "device", "")),
+        tuple(str(value) for value in target_classes),
+        tuple(sorted((str(key), str(value)) for key, value in label_aliases.items())),
+    )
+
+
+def shared_detector_for(server: AnnotationServer, config: object, detector_class: object) -> SharedDetector:
+    key = detector_cache_key(config)
+    with server.detector_cache_lock:
+        detector = server.detector_cache.get(key)
+        if detector is None:
+            detector = SharedDetector(detector_class(config))
+            server.detector_cache[key] = detector
+        return detector
+
+
+def prewarm_live_detector(server: AnnotationServer) -> None:
+    try:
+        from app.config import DetectorConfig
+        from app.detector import DroneDetector
+
+        shared_detector_for(server, DetectorConfig(model_path=str(server.live_model)), DroneDetector)
+        print("Default live detector prewarmed.")
+    except Exception as exc:
+        print(f"Default live detector prewarm failed: {exc}")
 
 
 class AnnotationHandler(BaseHTTPRequestHandler):
@@ -232,6 +331,14 @@ class AnnotationHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/training/stop":
             self.stop_training_job()
+            return
+        if parsed.path == "/api/media/remove":
+            payload = self.read_json()
+            self.remove_media(payload)
+            return
+        if parsed.path == "/api/live/events/remove":
+            payload = self.read_json()
+            self.remove_live_events(payload)
             return
 
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
@@ -391,11 +498,60 @@ class AnnotationHandler(BaseHTTPRequestHandler):
     def stop_training_job(self) -> None:
         self.send_json(stop_training_process(self.server))
 
+    def remove_media(self, payload: dict[str, object]) -> None:
+        folder = resolve_user_path(str(payload.get("folder") or self.server.default_folder))
+        paths = payload.get("paths")
+        if not isinstance(paths, list):
+            self.send_json({"error": "paths must be a list"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if not folder.exists() or not folder.is_dir():
+            self.send_json({"error": f"Folder not found: {folder}"}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        trash_root = PROJECT_ROOT / "data_store" / "trash" / "media" / datetime.now().strftime("%Y%m%d_%H%M%S")
+        removed: list[dict[str, str]] = []
+        failed: list[dict[str, str]] = []
+        folder_root = folder.resolve()
+        for value in paths:
+            source = resolve_user_path(str(value or ""))
+            try:
+                resolved = source.resolve()
+                relative = resolved.relative_to(folder_root)
+            except (OSError, ValueError):
+                failed.append({"path": str(source), "error": "media must be inside the selected media folder"})
+                continue
+            if not source.exists() or not source.is_file() or source.suffix.lower() not in MEDIA_EXTENSIONS:
+                failed.append({"path": str(source), "error": "media file not found"})
+                continue
+
+            target = unique_path(trash_root / relative)
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(source), str(target))
+            except OSError as exc:
+                failed.append({"path": str(source), "error": str(exc)})
+                continue
+            removed.append({"path": str(source), "trash_path": str(target)})
+
+        self.send_json({"removed": removed, "failed": failed, "trash_root": str(trash_root)})
+
+    def remove_live_events(self, payload: dict[str, object]) -> None:
+        event_ids = payload.get("event_ids")
+        if not isinstance(event_ids, list):
+            self.send_json({"error": "event_ids must be a list"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        events_root = PROJECT_ROOT / "data_store" / "detection_results" / "live_events"
+        try:
+            result = remove_live_event_rows(events_root, [str(value) for value in event_ids])
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json(result)
+
     def stream_live_detection(self, query: dict[str, list[str]]) -> None:
         source_value = query_value(query, "source", "0")
         camera_id = query_value(query, "camera", "")
-        if camera_id:
-            source_value = f"camera:{camera_id}"
+        camera_profile = query_value(query, "camera_profile", "main").strip().lower() or "main"
 
         model_path = resolve_user_path(query_value(query, "model", str(self.server.live_model)))
         confidence = parse_float(query_value(query, "conf", "0.5"), 0.5)
@@ -403,12 +559,19 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         image_size = parse_int(query_value(query, "imgsz", "640")) or 640
         device = query_value(query, "device", "")
         frame_skip = max(0, parse_int(query_value(query, "frame_skip", "0")))
-        max_fps = max(0.1, parse_float(query_value(query, "max_fps", "5"), 5.0))
+        preview_fps = max(0.1, parse_float(query_value(query, "preview_fps", query_value(query, "max_fps", "5")), 5.0))
+        legacy_max_fps = query_value(query, "max_fps", "")
+        detect_fps_default = legacy_max_fps if legacy_max_fps and not query_value(query, "preview_fps", "") else "2"
+        detect_fps = max(0.1, parse_float(query_value(query, "detect_fps", detect_fps_default), 2.0))
         max_width = max(0, parse_int(query_value(query, "max_width", "1280")))
         max_height = max(0, parse_int(query_value(query, "max_height", "720")))
         jpeg_quality = min(95, max(35, parse_int(query_value(query, "quality", "80"))))
+        read_failure_limit = max(5, parse_int(query_value(query, "read_failure_limit", "30")))
+        reconnect_attempts = max(0, parse_int(query_value(query, "reconnect_attempts", "5")))
+        reconnect_delay = max(0.1, parse_float(query_value(query, "reconnect_delay", "1.0"), 1.0))
         record_enabled = parse_bool(query_value(query, "record", "0"))
         record_labels = parse_bool(query_value(query, "record_labels", "0"))
+        record_name_suffix = query_value(query, "record_name_suffix", "").strip()
         record_dir = resolve_user_path(query_value(query, "record_dir", str(self.server.default_folder)))
         record_max_bytes = min(
             RECORDING_MAX_BYTES,
@@ -422,7 +585,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
             from app.alert import AlertManager
             from app.config import AlertConfig, DetectorConfig, TrackerConfig, UIConfig
             from app.detector import DroneDetector
-            from app.sources import open_source_capture, resolve_source
+            from app.sources import open_source_capture, resolve_camera, resolve_source
             from app.tracker import SimpleTracker
             from app.ui import OpenCVUI
         except Exception as exc:
@@ -431,20 +594,21 @@ class AnnotationHandler(BaseHTTPRequestHandler):
 
         cap = None
         try:
-            source = resolve_source(source_value, self.server.camera_config)
+            if camera_id:
+                source = resolve_camera(camera_id, self.server.camera_config, profile=camera_profile)
+            else:
+                source = resolve_source(source_value, self.server.camera_config)
             cap = open_source_capture(source)
             if not cap.isOpened():
                 self.send_error(HTTPStatus.BAD_REQUEST, f"Unable to open source: {source.label}")
                 return
 
-            detector = DroneDetector(
-                DetectorConfig(
-                    model_path=str(model_path),
-                    confidence_threshold=confidence,
-                    iou_threshold=iou,
-                    image_size=image_size,
-                    device=device,
-                )
+            detector_config = DetectorConfig(
+                model_path=str(model_path),
+                confidence_threshold=confidence,
+                iou_threshold=iou,
+                image_size=image_size,
+                device=device,
             )
             alert_config = AlertConfig(confidence_threshold=confidence)
             tracker = SimpleTracker(TrackerConfig(), alert_config.window_seconds)
@@ -469,13 +633,18 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         fps_meter = StreamFPSMeter()
         frame_index = 0
         failures = 0
-        min_interval = 1.0 / max_fps
+        preview_interval = 1.0 / preview_fps
+        detection_interval = 1.0 / detect_fps
         last_frame_at = 0.0
+        last_detection_at = 0.0
+        last_tracks = []
+        last_alert = alert_manager.update([], time.monotonic())
         stop_reason = "completed"
         event_logger = LiveEventLogger(
             PROJECT_ROOT / "data_store" / "detection_results" / "live_events",
             source_label=source.label,
             source_kind=source.kind,
+            source_id=camera_id or source.label,
             model_path=model_path,
             settings={
                 "confidence": confidence,
@@ -483,16 +652,33 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 "image_size": image_size,
                 "device": device or "auto",
                 "frame_skip": frame_skip,
-                "max_fps": max_fps,
+                "preview_fps": preview_fps,
+                "detect_fps": detect_fps,
                 "max_width": max_width,
                 "max_height": max_height,
                 "jpeg_quality": jpeg_quality,
+                "read_failure_limit": read_failure_limit,
+                "reconnect_attempts": reconnect_attempts,
+                "reconnect_delay": reconnect_delay,
                 "recording_enabled": record_enabled,
                 "recording_labels": record_labels,
                 "recording_max_mb": round(record_max_bytes / 1024 / 1024, 1),
+                "camera_profile": camera_profile if camera_id else "",
             },
         )
         event_logger.log_start()
+        detector_state: dict[str, object] = {"detector": None, "error": ""}
+
+        def load_detector_for_stream() -> None:
+            started_at = time.monotonic()
+            try:
+                detector_state["detector"] = shared_detector_for(self.server, detector_config, DroneDetector)
+                event_logger.log_detector_ready(time.monotonic() - started_at)
+            except Exception as exc:
+                detector_state["error"] = str(exc)
+                event_logger.log_error(f"detector unavailable: {exc}")
+
+        threading.Thread(target=load_detector_for_stream, daemon=True).start()
         last_detection_event_at = 0.0
         recorder: StreamRecorder | None = None
         if record_enabled:
@@ -500,43 +686,81 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 event_logger.log_recording_skipped("image source does not need stream recording")
             else:
                 try:
-                    recorder = StreamRecorder(
-                        record_dir,
-                        max_fps,
-                        record_max_bytes,
-                        record_rollover_bytes,
-                        name_suffix="_labeled" if record_labels else "",
+                    suffix_parts = []
+                    if record_name_suffix:
+                        suffix_parts.append(safe_name(record_name_suffix))
+                    if record_labels:
+                        suffix_parts.append("labeled")
+                        recorder = StreamRecorder(
+                            record_dir,
+                            preview_fps,
+                            record_max_bytes,
+                            record_rollover_bytes,
+                            name_suffix=f"_{'_'.join(suffix_parts)}" if suffix_parts else "",
                     )
                     event_logger.log_recording_started(record_dir, record_max_bytes, record_labels)
                 except OSError as exc:
                     event_logger.log_error(f"recording disabled: {exc}")
+        capture_worker = None
+        latest_frame_token = 0
+        use_capture_worker = source.kind in {"camera", "rtsp", "stream"}
+        if use_capture_worker:
+            capture_worker = LatestFrameCapture(
+                source,
+                cap,
+                open_source_capture,
+                event_logger,
+                read_failure_limit,
+                reconnect_attempts,
+                reconnect_delay,
+            )
+            capture_worker.start()
         try:
             while True:
-                ok, frame = cap.read()
-                if not ok or frame is None:
-                    failures += 1
-                    if source.is_image or failures > 30:
-                        stop_reason = "source_exhausted" if source.is_image else "read_failed"
+                if capture_worker is not None:
+                    latest_frame_token, frame, frame_index, capture_stop_reason = capture_worker.latest_after(latest_frame_token)
+                    if frame is None:
+                        if capture_stop_reason:
+                            stop_reason = capture_stop_reason
+                            break
+                        time.sleep(0.01)
+                        continue
+                else:
+                    ok, frame = cap.read()
+                    if not ok or frame is None:
+                        stop_reason = "source_exhausted"
                         break
-                    time.sleep(0.1)
-                    continue
-                failures = 0
-                frame_index += 1
-                if frame_skip and frame_index % (frame_skip + 1) != 1:
-                    continue
+                    failures = 0
+                    frame_index += 1
 
                 now = time.monotonic()
-                wait = min_interval - (now - last_frame_at)
+                wait = preview_interval - (now - last_frame_at)
                 if wait > 0:
                     time.sleep(wait)
                 last_frame_at = time.monotonic()
 
                 frame = resize_frame(frame, max_width, max_height)
-                detections = detector.detect(frame)
-                tracks = tracker.update(detections, time.monotonic())
-                alert = alert_manager.update(tracks, time.monotonic())
+                detector = detector_state.get("detector")
+                detector_status = ""
+                detection_ran = False
+                if detector is None:
+                    tracks = last_tracks
+                    alert = last_alert
+                    detector_status = " | detector error" if detector_state.get("error") else " | loading detector"
+                else:
+                    detection_due = last_detection_at <= 0 or time.monotonic() - last_detection_at >= detection_interval
+                    if frame_skip and frame_index % (frame_skip + 1) != 1:
+                        detection_due = False
+                    if detection_due:
+                        detections = detector.detect(frame)
+                        detection_ran = True
+                        last_detection_at = time.monotonic()
+                        last_tracks = tracker.update(detections, last_detection_at)
+                        last_alert = alert_manager.update(last_tracks, last_detection_at)
+                    tracks = last_tracks
+                    alert = last_alert
                 fps = fps_meter.update()
-                annotated = ui.draw(frame, tracks, alert, fps, source.label)
+                annotated = ui.draw(frame, tracks, alert, fps, f"{source.label}{detector_status}")
                 if recorder is not None:
                     try:
                         recorder.write(annotated if record_labels else frame)
@@ -551,7 +775,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 payload = encoded.tobytes()
                 event_tracks = alert.tracks if alert.active and alert.tracks else tracks
                 event_now = time.monotonic()
-                if event_tracks and event_logger.should_log_detection(last_detection_event_at, event_now):
+                if detection_ran and event_tracks and event_logger.should_log_detection(last_detection_event_at, event_now):
                     last_detection_event_at = event_now
                     event_logger.log_detection(event_tracks, frame_index, fps, payload)
                 self.wfile.write(b"--frame\r\n")
@@ -573,7 +797,10 @@ class AnnotationHandler(BaseHTTPRequestHandler):
             if recorder is not None:
                 for segment in recorder.close():
                     event_logger.log_recording_saved(segment["path"], int(segment["size_bytes"]), record_labels)
-            cap.release()
+            if capture_worker is not None:
+                capture_worker.close()
+            else:
+                cap.release()
             event_logger.log_stop(stop_reason, frame_index)
 
     def send_static(self, path: Path, content_type: str | None = None) -> None:
@@ -900,6 +1127,17 @@ def safe_name(value: str) -> str:
     return safe.strip("._") or "annotation"
 
 
+def unique_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    index = 2
+    while True:
+        candidate = path.with_name(f"{path.stem}_{index}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
 def write_data_yaml(project_dir: Path, class_name: str) -> None:
     project_dir.mkdir(parents=True, exist_ok=True)
     content = (
@@ -1066,7 +1304,7 @@ def read_recent_live_events(root_dir: Path, limit: int) -> list[dict[str, object
             lines = event_path.read_text(encoding="utf-8").splitlines()
         except OSError:
             continue
-        for line in reversed(lines):
+        for line_number, line in reversed(list(enumerate(lines, start=1))):
             if not line.strip():
                 continue
             try:
@@ -1074,10 +1312,81 @@ def read_recent_live_events(root_dir: Path, limit: int) -> list[dict[str, object
             except json.JSONDecodeError:
                 continue
             if isinstance(event, dict):
+                event["event_id"] = f"{day_dir.name}:{line_number}"
                 events.append(event)
             if len(events) >= limit:
                 return events
     return events
+
+
+def remove_live_event_rows(root_dir: Path, event_ids: list[str]) -> dict[str, object]:
+    requested = {event_id for event_id in event_ids if event_id}
+    if not requested:
+        return {"removed": [], "failed": []}
+
+    by_day: dict[str, set[int]] = {}
+    failed: list[dict[str, str]] = []
+    for event_id in requested:
+        match = re.fullmatch(r"(\d{4}-\d{2}-\d{2}):(\d+)", event_id)
+        if not match:
+            failed.append({"event_id": event_id, "error": "invalid event id"})
+            continue
+        by_day.setdefault(match.group(1), set()).add(int(match.group(2)))
+
+    removed: list[str] = []
+    removed_images: list[str] = []
+    for day, line_numbers in by_day.items():
+        event_path = root_dir / day / "events.jsonl"
+        if not event_path.exists():
+            failed.extend({"event_id": f"{day}:{line_number}", "error": "event log not found"} for line_number in line_numbers)
+            continue
+        try:
+            lines = event_path.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            failed.extend({"event_id": f"{day}:{line_number}", "error": str(exc)} for line_number in line_numbers)
+            continue
+
+        kept: list[str] = []
+        changed = False
+        for line_number, line in enumerate(lines, start=1):
+            if line_number not in line_numbers:
+                kept.append(line)
+                continue
+            changed = True
+            removed.append(f"{day}:{line_number}")
+            maybe_remove_event_image(root_dir, line, removed_images)
+
+        if not changed:
+            continue
+        try:
+            event_path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+        except OSError as exc:
+            failed.extend({"event_id": f"{day}:{line_number}", "error": str(exc)} for line_number in line_numbers)
+
+    return {"removed": removed, "failed": failed, "removed_images": removed_images}
+
+
+def maybe_remove_event_image(events_root: Path, line: str, removed_images: list[str]) -> None:
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return
+    if not isinstance(event, dict):
+        return
+    image_value = str(event.get("image_path") or "")
+    if not image_value:
+        return
+    image_path = resolve_user_path(image_value)
+    try:
+        image_path.resolve().relative_to(events_root.resolve())
+    except (OSError, ValueError):
+        return
+    try:
+        if image_path.exists() and image_path.is_file():
+            image_path.unlink()
+            removed_images.append(str(image_path))
+    except OSError:
+        return
 
 
 def query_value(query: dict[str, list[str]], name: str, default: str) -> str:
@@ -1117,6 +1426,110 @@ def resize_frame(frame, max_width: int, max_height: int):
         return frame
     new_size = (int(width * scale), int(height * scale))
     return cv2.resize(frame, new_size, interpolation=cv2.INTER_AREA)
+
+
+class LatestFrameCapture:
+    def __init__(
+        self,
+        source: object,
+        cap: object,
+        open_capture: object,
+        event_logger: object,
+        read_failure_limit: int,
+        reconnect_attempts: int,
+        reconnect_delay: float,
+    ) -> None:
+        self.source = source
+        self.cap = cap
+        self.open_capture = open_capture
+        self.event_logger = event_logger
+        self.read_failure_limit = read_failure_limit
+        self.reconnect_attempts = reconnect_attempts
+        self.reconnect_delay = reconnect_delay
+        self.lock = threading.Lock()
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.frame = None
+        self.token = 0
+        self.frames_seen = 0
+        self.stop_reason = ""
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def latest_after(self, previous_token: int):
+        with self.lock:
+            if self.frame is None or self.token == previous_token:
+                return self.token, None, self.frames_seen, self.stop_reason
+            return self.token, self.frame.copy(), self.frames_seen, self.stop_reason
+
+    def close(self) -> None:
+        self.stop_event.set()
+        if self.thread.is_alive():
+            self.thread.join(timeout=2.0)
+        try:
+            self.cap.release()
+        except Exception:
+            pass
+
+    def _set_stop_reason(self, reason: str) -> None:
+        with self.lock:
+            self.stop_reason = reason
+
+    def _set_frame(self, frame) -> None:
+        with self.lock:
+            self.frame = frame
+            self.frames_seen += 1
+            self.token += 1
+
+    def _run(self) -> None:
+        failures = 0
+        reconnect_count = 0
+        while not self.stop_event.is_set():
+            ok, frame = self.cap.read()
+            if ok and frame is not None:
+                failures = 0
+                self._set_frame(frame)
+                continue
+
+            if getattr(self.source, "is_image", False) or getattr(self.source, "kind", "") == "video":
+                self._set_stop_reason("source_exhausted")
+                return
+
+            failures += 1
+            if failures <= self.read_failure_limit:
+                time.sleep(0.05)
+                continue
+
+            reconnected = False
+            while not self.stop_event.is_set() and reconnect_count < self.reconnect_attempts:
+                reconnect_count += 1
+                self.event_logger.log_source_reconnect("read_failed", reconnect_count, self.reconnect_attempts)
+                try:
+                    self.cap.release()
+                except Exception:
+                    pass
+                time.sleep(self.reconnect_delay)
+                new_cap = None
+                try:
+                    new_cap = self.open_capture(self.source)
+                except Exception as exc:
+                    self.event_logger.log_error(f"source reconnect failed: {exc}")
+                if new_cap is not None and new_cap.isOpened():
+                    self.cap = new_cap
+                    failures = 0
+                    self.event_logger.log_source_reconnected(reconnect_count)
+                    reconnected = True
+                    break
+                if new_cap is not None:
+                    try:
+                        new_cap.release()
+                    except Exception:
+                        pass
+
+            if not reconnected:
+                self._set_stop_reason("read_failed")
+                return
 
 
 def start_training_process(server: AnnotationServer, payload: dict[str, object]) -> dict[str, object]:
@@ -1512,6 +1925,7 @@ class LiveEventLogger:
         root_dir: Path,
         source_label: str,
         source_kind: str,
+        source_id: str,
         model_path: Path,
         settings: dict[str, object],
     ) -> None:
@@ -1523,11 +1937,13 @@ class LiveEventLogger:
         self.event_path = self.day_dir / "events.jsonl"
         self.source_label = source_label
         self.source_kind = source_kind
+        self.source_id = source_id
         self.model_path = model_path
         self.settings = settings
         self.started_at = time.monotonic()
         self.detection_cooldown_seconds = 5.0
         self.detection_count = 0
+        self.lock = threading.Lock()
 
     def log_start(self) -> None:
         self._append(
@@ -1551,6 +1967,15 @@ class LiveEventLogger:
 
     def log_error(self, message: str) -> None:
         self._append({"event_type": "error", "message": message})
+
+    def log_detector_ready(self, elapsed_seconds: float) -> None:
+        self._append(
+            {
+                "event_type": "detector_ready",
+                "message": f"detector ready in {elapsed_seconds:.2f}s",
+                "elapsed_seconds": round(elapsed_seconds, 3),
+            }
+        )
 
     def log_recording_started(self, output_dir: Path, max_bytes: int, labels: bool = False) -> None:
         self._append(
@@ -1576,6 +2001,26 @@ class LiveEventLogger:
 
     def log_recording_skipped(self, reason: str) -> None:
         self._append({"event_type": "recording_skipped", "message": reason})
+
+    def log_source_reconnect(self, reason: str, attempt: int, max_attempts: int) -> None:
+        self._append(
+            {
+                "event_type": "source_reconnect",
+                "message": f"{reason}; reconnect attempt {attempt}/{max_attempts}",
+                "reason": reason,
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+            }
+        )
+
+    def log_source_reconnected(self, attempt: int) -> None:
+        self._append(
+            {
+                "event_type": "source_reconnected",
+                "message": f"source reconnected on attempt {attempt}",
+                "attempt": attempt,
+            }
+        )
 
     def should_log_detection(self, last_logged_at: float, now: float) -> bool:
         return last_logged_at <= 0 or now - last_logged_at >= self.detection_cooldown_seconds
@@ -1611,12 +2056,14 @@ class LiveEventLogger:
             "session_id": self.session_id,
             "source": self.source_label,
             "source_kind": self.source_kind,
+            "source_id": self.source_id,
             **payload,
         }
         try:
             self.event_path.parent.mkdir(parents=True, exist_ok=True)
-            with self.event_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(row, sort_keys=True) + "\n")
+            with self.lock:
+                with self.event_path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(row, sort_keys=True) + "\n")
         except OSError:
             return
 

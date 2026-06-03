@@ -17,10 +17,12 @@ const state = {
   liveRegistryCameras: [],
   liveLocalCameras: [],
   liveLocalScanRunning: false,
-  liveSelectedMediaPath: "",
+  liveSelectedMediaPaths: [],
+  selectedLiveEventIds: new Set(),
   liveEvents: [],
   liveRunning: false,
   liveRecording: false,
+  liveStreamJobs: [],
   liveModelPath: "",
   trainingJob: null,
 };
@@ -43,6 +45,7 @@ const els = {
   kindFilter: document.getElementById("kindFilter"),
   mediaCount: document.getElementById("mediaCount"),
   mediaList: document.getElementById("mediaList"),
+  removeSelectedMediaButton: document.getElementById("removeSelectedMediaButton"),
   rawFileCount: document.getElementById("rawFileCount"),
   rawVideoCount: document.getElementById("rawVideoCount"),
   rawImageCount: document.getElementById("rawImageCount"),
@@ -68,13 +71,19 @@ const els = {
   backButton: document.getElementById("backButton"),
   forwardButton: document.getElementById("forwardButton"),
   liveCameraSelect: document.getElementById("liveCameraSelect"),
+  liveCameraProfileSelect: document.getElementById("liveCameraProfileSelect"),
+  liveClearCamerasButton: document.getElementById("liveClearCamerasButton"),
+  liveClearMediaButton: document.getElementById("liveClearMediaButton"),
   liveScanLocalButton: document.getElementById("liveScanLocalButton"),
   liveSourceInput: document.getElementById("liveSourceInput"),
   liveConfInput: document.getElementById("liveConfInput"),
-  liveFpsInput: document.getElementById("liveFpsInput"),
+  livePreviewFpsInput: document.getElementById("livePreviewFpsInput"),
+  liveDetectionFpsInput: document.getElementById("liveDetectionFpsInput"),
   liveFrameSkipInput: document.getElementById("liveFrameSkipInput"),
   livePresetSelect: document.getElementById("livePresetSelect"),
   liveImageSizeInput: document.getElementById("liveImageSizeInput"),
+  livePreviewSizeSelect: document.getElementById("livePreviewSizeSelect"),
+  liveJpegQualityInput: document.getElementById("liveJpegQualityInput"),
   liveDeviceSelect: document.getElementById("liveDeviceSelect"),
   liveRecordInput: document.getElementById("liveRecordInput"),
   liveRecordLabelsInput: document.getElementById("liveRecordLabelsInput"),
@@ -83,10 +92,12 @@ const els = {
   liveVideoPreview: document.getElementById("liveVideoPreview"),
   liveImagePreview: document.getElementById("liveImagePreview"),
   liveStream: document.getElementById("liveStream"),
+  liveStreamGrid: document.getElementById("liveStreamGrid"),
   livePlaceholder: document.getElementById("livePlaceholder"),
   liveTitle: document.getElementById("liveTitle"),
   liveStatus: document.getElementById("liveStatus"),
   liveRefreshEventsButton: document.getElementById("liveRefreshEventsButton"),
+  liveRemoveEventsButton: document.getElementById("liveRemoveEventsButton"),
   liveEventsUpdatedAt: document.getElementById("liveEventsUpdatedAt"),
   liveEventList: document.getElementById("liveEventList"),
   trainingScopeSelect: document.getElementById("trainingScopeSelect"),
@@ -146,6 +157,7 @@ function bindEvents() {
   els.projectInput.addEventListener("change", refreshStats);
   els.refreshStatsButton.addEventListener("click", refreshStats);
   els.kindFilter.addEventListener("change", renderMediaList);
+  els.removeSelectedMediaButton.addEventListener("click", removeSelectedMedia);
   els.captureButton.addEventListener("click", captureCurrentFrame);
   els.videoButton.addEventListener("click", showVideo);
   els.playButton.addEventListener("click", playVideo);
@@ -153,16 +165,22 @@ function bindEvents() {
   els.backButton.addEventListener("click", () => seekVideo(-1));
   els.forwardButton.addEventListener("click", () => seekVideo(1));
   els.liveCameraSelect.addEventListener("change", onLiveCameraChanged);
+  els.liveCameraProfileSelect.addEventListener("change", stopLiveDetectionForSourceChange);
+  els.liveClearCamerasButton.addEventListener("click", () => clearLiveCameraSelection());
+  els.liveClearMediaButton.addEventListener("click", () => clearLiveMediaSelection());
   els.liveScanLocalButton.addEventListener("click", scanLocalCameras);
   els.liveSourceInput.addEventListener("input", onLiveCustomSourceInput);
   els.livePresetSelect.addEventListener("change", applyLivePreset);
-  [els.liveFpsInput, els.liveFrameSkipInput, els.liveImageSizeInput].forEach((input) => {
+  [els.livePreviewFpsInput, els.liveDetectionFpsInput, els.liveFrameSkipInput, els.liveImageSizeInput, els.liveJpegQualityInput].forEach((input) => {
     input.addEventListener("input", markLivePresetCustom);
   });
+  els.livePreviewSizeSelect.addEventListener("change", markLivePresetCustom);
   els.liveDeviceSelect.addEventListener("change", stopLiveDetectionForSourceChange);
   els.liveStartButton.addEventListener("click", startLiveDetection);
   els.liveStopButton.addEventListener("click", stopLiveDetection);
   els.liveRefreshEventsButton.addEventListener("click", refreshLiveEvents);
+  els.liveRemoveEventsButton.addEventListener("click", removeSelectedEvents);
+  els.liveEventList.addEventListener("change", onLiveEventSelectionChanged);
   els.trainingScopeSelect.addEventListener("change", onTrainingScopeChanged);
   els.trainingFromDateInput.addEventListener("change", renderTrainingSelection);
   els.trainingToDateInput.addEventListener("change", renderTrainingSelection);
@@ -217,9 +235,9 @@ function showTab(name) {
   els.annotateTabButton.classList.toggle("active", !live && !training);
   renderMediaList();
   if (live) {
-    const selectedMedia = selectedLiveMediaItem();
-    if (selectedMedia && !state.liveRunning) {
-      showLiveMediaPreview(selectedMedia);
+    const selectedMedia = selectedLiveMediaItems();
+    if (selectedMedia.length && !state.liveRunning) {
+      showLiveMediaSelection();
     } else if (!state.liveRunning) {
       showLivePlaceholder();
     }
@@ -244,8 +262,8 @@ async function loadLiveCameras() {
 }
 
 function renderLiveCameraSelect() {
-  const previousValue = els.liveCameraSelect.value;
-  els.liveCameraSelect.innerHTML = `<option value="">Custom source</option>`;
+  const previousValues = new Set([...els.liveCameraSelect.selectedOptions].map((option) => option.value));
+  els.liveCameraSelect.innerHTML = "";
 
   if (state.liveRegistryCameras.length) {
     const group = document.createElement("optgroup");
@@ -278,9 +296,9 @@ function renderLiveCameraSelect() {
     els.liveCameraSelect.appendChild(group);
   }
 
-  if ([...els.liveCameraSelect.options].some((option) => option.value === previousValue)) {
-    els.liveCameraSelect.value = previousValue;
-  }
+  [...els.liveCameraSelect.options].forEach((option) => {
+    option.selected = previousValues.has(option.value);
+  });
 }
 
 async function loadLocalCameras() {
@@ -344,33 +362,46 @@ async function scanLocalCameras() {
 }
 
 function onLiveCameraChanged() {
-  const selected = selectedLiveSourceOption();
-  if (!selected) return;
-  state.liveSelectedMediaPath = "";
-  const source = selected.dataset.source || "";
-  if (selected.dataset.streamKind === "camera") {
-    els.liveSourceInput.value = `camera:${source}`;
-  } else if (selected.dataset.streamKind === "source") {
-    els.liveSourceInput.value = source;
+  const selected = selectedLiveSourceOptions();
+  if (!selected.length) {
+    updateLiveMediaSourceInput();
+    renderMediaList();
+    stopLiveDetectionForSourceChange();
+    if (selectedLiveMediaItems().length) {
+      showLiveMediaSelection();
+    } else {
+      showLivePlaceholder();
+    }
+    els.liveTitle.textContent = liveSourceLabel();
+    return;
   }
+  clearLiveMediaSelection({ silent: true });
+  els.liveSourceInput.value = selected.length === 1
+    ? liveOptionSourceValue(selected[0])
+    : `${selected.length} cameras selected`;
   renderMediaList();
   stopLiveDetectionForSourceChange();
   showLivePlaceholder();
   els.liveTitle.textContent = liveSourceLabel();
 }
 
-function selectLiveMediaSource(item) {
-  state.liveSelectedMediaPath = item.path;
-  els.liveCameraSelect.value = "";
-  els.liveSourceInput.value = item.path;
+function toggleLiveMediaSource(item) {
+  clearLiveCameraSelection({ silent: true });
+  const existingIndex = state.liveSelectedMediaPaths.indexOf(item.path);
+  if (existingIndex >= 0) {
+    state.liveSelectedMediaPaths.splice(existingIndex, 1);
+  } else {
+    state.liveSelectedMediaPaths.push(item.path);
+  }
+  updateLiveMediaSourceInput();
   renderMediaList();
   stopLiveDetectionForSourceChange();
-  showLiveMediaPreview(item);
+  showLiveMediaSelection();
 }
 
 function onLiveCustomSourceInput() {
-  els.liveCameraSelect.value = "";
-  state.liveSelectedMediaPath = "";
+  clearLiveCameraSelection({ silent: true });
+  clearLiveMediaSelection({ silent: true });
   renderMediaList();
   stopLiveDetectionForSourceChange();
   showLivePlaceholder();
@@ -379,13 +410,17 @@ function onLiveCustomSourceInput() {
 
 function startLiveDetection() {
   if (state.liveRunning) stopLiveDetection({ restorePreview: false });
-  const url = liveStreamUrl();
+  const jobs = liveStreamJobs();
+  if (!jobs.length) {
+    setLiveStatus("Choose a source first");
+    return;
+  }
   hideLiveMediaPreview();
-  els.liveStream.src = url;
-  els.liveStream.style.display = "block";
+  renderLiveStreamGrid(jobs);
   els.livePlaceholder.style.display = "none";
   state.liveRunning = true;
   state.liveRecording = els.liveRecordInput.checked;
+  state.liveStreamJobs = jobs;
   els.liveStartButton.disabled = true;
   els.liveRecordInput.disabled = true;
   els.liveRecordLabelsInput.disabled = true;
@@ -406,15 +441,17 @@ function stopLiveDetection(options = {}) {
   const wasRecording = state.liveRecording;
   state.liveRunning = false;
   state.liveRecording = false;
+  state.liveStreamJobs = [];
   els.liveStream.removeAttribute("src");
   els.liveStream.style.display = "none";
+  clearLiveStreamGrid();
   els.liveStartButton.disabled = false;
   els.liveRecordInput.disabled = false;
   els.liveRecordLabelsInput.disabled = false;
   if (restorePreview) {
-    const selectedMedia = selectedLiveMediaItem();
-    if (selectedMedia) {
-      showLiveMediaPreview(selectedMedia);
+    const selectedMedia = selectedLiveMediaItems();
+    if (selectedMedia.length) {
+      showLiveMediaSelection();
     } else {
       showLivePlaceholder();
     }
@@ -436,23 +473,65 @@ function stopLiveDetectionForSourceChange() {
   els.liveTitle.textContent = liveSourceLabel();
 }
 
-function liveStreamUrl() {
-  const params = new URLSearchParams();
-  const selected = selectedLiveSourceOption();
-  if (selected && selected.dataset.streamKind === "camera") {
-    params.set("camera", selected.dataset.source || "");
-  } else if (selected && selected.dataset.streamKind === "source") {
-    params.set("source", selected.dataset.source || "0");
-  } else if (state.liveSelectedMediaPath) {
-    params.set("source", state.liveSelectedMediaPath);
-  } else {
-    params.set("source", els.liveSourceInput.value || "0");
+function liveStreamJobs() {
+  const selected = selectedLiveSourceOptions();
+  if (selected.length) {
+    return selected.map((option) => ({
+      key: option.value,
+      label: option.textContent.trim(),
+      params: liveStreamParamsForOption(option),
+    }));
   }
+  const mediaItems = selectedLiveMediaItems();
+  if (mediaItems.length) {
+    return mediaItems.map((item) => ({
+      key: `media:${item.path}`,
+      label: `${item.relative || item.name} · ${item.kind}`,
+      params: { source: item.path },
+    }));
+  }
+  const source = els.liveSourceInput.value.trim();
+  if (!source) return [];
+  return [
+    {
+      key: `source:${source}`,
+      label: source,
+      params: { source },
+    },
+  ];
+}
+
+function liveStreamParamsForOption(option) {
+  const source = option.dataset.source || "";
+  if (option.dataset.streamKind === "camera") return { camera: source };
+  return { source: source || "0" };
+}
+
+function liveOptionSourceValue(option) {
+  const source = option.dataset.source || "";
+  if (option.dataset.streamKind === "camera") return `camera:${source}`;
+  return source;
+}
+
+function liveStreamUrl(job) {
+  const params = new URLSearchParams();
+  Object.entries(job.params || {}).forEach(([key, value]) => {
+    params.set(key, value);
+  });
   params.set("model", state.liveModelPath || "data_store/models/trained/yolov8n_drone_best.pt");
   params.set("conf", els.liveConfInput.value || "0.5");
-  params.set("max_fps", els.liveFpsInput.value || "5");
+  params.set("preview_fps", els.livePreviewFpsInput.value || "6");
+  params.set("detect_fps", els.liveDetectionFpsInput.value || "2");
+  params.set("max_fps", els.livePreviewFpsInput.value || "6");
   params.set("frame_skip", els.liveFrameSkipInput.value || "0");
   params.set("imgsz", els.liveImageSizeInput.value || "640");
+  const previewSize = livePreviewSize();
+  params.set("max_width", String(previewSize.width));
+  params.set("max_height", String(previewSize.height));
+  params.set("quality", els.liveJpegQualityInput.value || "75");
+  if (job.params && job.params.camera) {
+    params.set("camera_profile", els.liveCameraProfileSelect.value || "preview");
+  }
   if (els.liveDeviceSelect.value) {
     params.set("device", els.liveDeviceSelect.value);
   }
@@ -460,6 +539,7 @@ function liveStreamUrl() {
     params.set("record", "1");
     params.set("record_dir", els.folderInput.value);
     params.set("record_max_mb", "30");
+    params.set("record_name_suffix", liveRecordSuffix(job));
     if (els.liveRecordLabelsInput.checked) {
       params.set("record_labels", "1");
     }
@@ -468,23 +548,89 @@ function liveStreamUrl() {
   return `/api/live/stream?${params.toString()}`;
 }
 
+function renderLiveStreamGrid(jobs) {
+  clearLiveStreamGrid();
+  els.liveStreamGrid.style.display = "grid";
+  jobs.forEach((job) => {
+    const tile = document.createElement("section");
+    tile.className = "liveStreamTile";
+    tile.dataset.streamKey = job.key;
+
+    const header = document.createElement("div");
+    header.className = "liveStreamTileHeader";
+    const title = document.createElement("strong");
+    title.textContent = job.label || "Live source";
+    const stateText = document.createElement("span");
+    stateText.textContent = "Starting";
+    header.append(title, stateText);
+
+    const image = document.createElement("img");
+    image.className = "liveStreamImage";
+    image.alt = "";
+    image.addEventListener("load", () => {
+      stateText.textContent = "Streaming";
+      if (state.liveRunning) setLiveStatus(`${job.label || "Source"} streaming`);
+    });
+    image.addEventListener("error", () => {
+      stateText.textContent = "Unavailable";
+      if (state.liveRunning) setLiveStatus(`${job.label || "Source"} unavailable`);
+    });
+    image.src = liveStreamUrl(job);
+
+    tile.append(header, image);
+    els.liveStreamGrid.appendChild(tile);
+  });
+}
+
+function clearLiveStreamGrid() {
+  [...els.liveStreamGrid.querySelectorAll("img")].forEach((image) => image.removeAttribute("src"));
+  els.liveStreamGrid.innerHTML = "";
+  els.liveStreamGrid.style.display = "none";
+}
+
+function liveRecordSuffix(job) {
+  if (job.params && job.params.camera) return `camera_${job.params.camera}`;
+  const source = String((job.params && job.params.source) || "");
+  if (/^\d+$/.test(source)) return `camera_${source}`;
+  try {
+    const url = new URL(source);
+    if (url.hostname) return `source_${url.hostname}`;
+  } catch (_error) {
+    // Not a URL; fall back to the file/source basename.
+  }
+  const basename = source.split(/[\\/]/).filter(Boolean).pop() || job.label || "source";
+  return `source_${basename}`;
+}
+
 function applyLivePreset() {
   const presets = {
-    balanced: { fps: "5", skip: "0", imageSize: "640" },
-    fast: { fps: "12", skip: "2", imageSize: "416" },
-    quality: { fps: "3", skip: "0", imageSize: "960" },
+    balanced: { previewFps: "6", detectionFps: "2", skip: "0", imageSize: "640", previewSize: "1280x720", quality: "75" },
+    fast: { previewFps: "10", detectionFps: "1.5", skip: "0", imageSize: "416", previewSize: "854x480", quality: "65" },
+    quality: { previewFps: "4", detectionFps: "3", skip: "0", imageSize: "960", previewSize: "1920x1080", quality: "85" },
   };
   const preset = presets[els.livePresetSelect.value];
   if (!preset) return;
-  els.liveFpsInput.value = preset.fps;
+  els.livePreviewFpsInput.value = preset.previewFps;
+  els.liveDetectionFpsInput.value = preset.detectionFps;
   els.liveFrameSkipInput.value = preset.skip;
   els.liveImageSizeInput.value = preset.imageSize;
+  els.livePreviewSizeSelect.value = preset.previewSize;
+  els.liveJpegQualityInput.value = preset.quality;
   stopLiveDetectionForSourceChange();
 }
 
 function markLivePresetCustom() {
   els.livePresetSelect.value = "custom";
   stopLiveDetectionForSourceChange();
+}
+
+function livePreviewSize() {
+  const raw = els.livePreviewSizeSelect.value || "1280x720";
+  const [width, height] = raw.split("x").map((value) => Number.parseInt(value, 10));
+  return {
+    width: Number.isFinite(width) ? width : 1280,
+    height: Number.isFinite(height) ? height : 720,
+  };
 }
 
 function onTrainingScopeChanged() {
@@ -649,25 +795,78 @@ function datasetScopeLabel(scope) {
 }
 
 function liveSourceLabel() {
-  const selected = selectedLiveSourceOption();
-  if (selected) return selected.textContent;
-  const selectedMedia = state.media.find((item) => item.path === state.liveSelectedMediaPath);
-  if (selectedMedia) return `${selectedMedia.relative || selectedMedia.name} · ${selectedMedia.kind}`;
+  const selected = selectedLiveSourceOptions();
+  if (selected.length === 1) return selected[0].textContent;
+  if (selected.length > 1) return `${selected.length} selected camera sources`;
+  const selectedMedia = selectedLiveMediaItems();
+  if (selectedMedia.length === 1) return `${selectedMedia[0].relative || selectedMedia[0].name} · ${selectedMedia[0].kind}`;
+  if (selectedMedia.length > 1) return `${selectedMedia.length} selected media sources`;
   return els.liveSourceInput.value || "Custom source";
 }
 
+function selectedLiveSourceOptions() {
+  return [...els.liveCameraSelect.selectedOptions].filter((option) => option.value && !option.disabled);
+}
+
 function selectedLiveSourceOption() {
-  const selected = els.liveCameraSelect.selectedOptions[0];
-  return selected && selected.value ? selected : null;
+  return selectedLiveSourceOptions()[0] || null;
+}
+
+function clearLiveCameraSelection(options = {}) {
+  [...els.liveCameraSelect.options].forEach((option) => {
+    option.selected = false;
+  });
+  if (options.silent) return;
+  onLiveCameraChanged();
 }
 
 function selectedLiveMediaItem() {
-  return state.media.find((item) => item.path === state.liveSelectedMediaPath) || null;
+  return selectedLiveMediaItems()[0] || null;
+}
+
+function selectedLiveMediaItems() {
+  return state.liveSelectedMediaPaths
+    .map((path) => state.media.find((item) => item.path === path))
+    .filter(Boolean);
+}
+
+function clearLiveMediaSelection(options = {}) {
+  state.liveSelectedMediaPaths = [];
+  if (options.silent) return;
+  updateLiveMediaSourceInput();
+  renderMediaList();
+  stopLiveDetectionForSourceChange();
+  showLivePlaceholder();
+}
+
+function updateLiveMediaSourceInput() {
+  const items = selectedLiveMediaItems();
+  if (items.length === 1) {
+    els.liveSourceInput.value = items[0].path;
+  } else if (items.length > 1) {
+    els.liveSourceInput.value = `${items.length} media sources selected`;
+  } else {
+    els.liveSourceInput.value = "";
+  }
+}
+
+function showLiveMediaSelection() {
+  const selectedMedia = selectedLiveMediaItems();
+  if (selectedMedia.length === 1) {
+    showLiveMediaPreview(selectedMedia[0]);
+    return;
+  }
+  showLivePlaceholder();
+  els.liveTitle.textContent = liveSourceLabel();
+  if (selectedMedia.length > 1) {
+    setLiveStatus(`${selectedMedia.length} media sources selected`);
+  }
 }
 
 function showLiveMediaPreview(item) {
   els.liveStream.removeAttribute("src");
   els.liveStream.style.display = "none";
+  clearLiveStreamGrid();
   els.livePlaceholder.style.display = "none";
   els.liveTitle.textContent = `${item.relative || item.name} · ${item.kind}`;
   const url = mediaUrl(item.path, mediaVersion(item));
@@ -702,10 +901,11 @@ function showLivePlaceholder() {
   hideLiveMediaPreview();
   els.liveStream.removeAttribute("src");
   els.liveStream.style.display = "none";
+  clearLiveStreamGrid();
   els.livePlaceholder.style.display = "flex";
 }
 
-async function scanFolder() {
+async function scanFolder(options = {}) {
   setStatus("Scanning...");
   const result = await postJson("/api/scan", { folder: els.folderInput.value });
   if (result.error) {
@@ -715,20 +915,30 @@ async function scanFolder() {
   state.media = result.media || [];
   state.currentIndex = -1;
   state.current = null;
-  if (!state.media.some((item) => item.path === state.liveSelectedMediaPath)) {
-    state.liveSelectedMediaPath = "";
+  const availablePaths = new Set(state.media.map((item) => item.path));
+  const previousMediaSelectionCount = state.liveSelectedMediaPaths.length;
+  state.liveSelectedMediaPaths = state.liveSelectedMediaPaths.filter((path) => availablePaths.has(path));
+  if (previousMediaSelectionCount && !state.liveSelectedMediaPaths.length) {
+    updateLiveMediaSourceInput();
     showLivePlaceholder();
   }
   renderMediaList();
   await refreshStats();
-  if (state.filtered.length) {
-    if (state.mode === "live") {
-      selectLiveMediaSource(state.filtered[0]);
-    } else {
-      selectMedia(0);
+  const autoSelect = options.autoSelect !== false;
+  if (!state.filtered.length) {
+    setStatus("No media found");
+    return;
+  }
+  if (!autoSelect) {
+    setStatus("Ready");
+    return;
+  }
+  if (state.mode === "live") {
+    if (!selectedLiveSourceOptions().length && !state.liveSelectedMediaPaths.length) {
+      toggleLiveMediaSource(state.filtered[0]);
     }
   } else {
-    setStatus("No media found");
+    selectMedia(0);
   }
 }
 
@@ -739,16 +949,86 @@ function renderMediaList() {
   const live = state.mode === "live";
   renderMediaItems(els.mediaList, state.filtered, {
     isActive: (item) => live
-      ? state.liveSelectedMediaPath === item.path
+      ? state.liveSelectedMediaPaths.includes(item.path)
       : state.current && state.current.path === item.path,
     onSelect: (item, index) => {
       if (live) {
-        selectLiveMediaSource(item);
+        toggleLiveMediaSource(item);
       } else {
         selectMedia(index);
       }
     },
   });
+  updateRemoveMediaButton();
+}
+
+function selectedMediaForRemoval() {
+  if (state.mode === "live") return selectedLiveMediaItems();
+  return state.current ? [state.current] : [];
+}
+
+function updateRemoveMediaButton() {
+  const selectedCount = selectedMediaForRemoval().length;
+  els.removeSelectedMediaButton.disabled = selectedCount === 0;
+  els.removeSelectedMediaButton.textContent = selectedCount > 1
+    ? `Remove ${selectedCount}`
+    : "Remove Selected";
+}
+
+async function removeSelectedMedia() {
+  const items = selectedMediaForRemoval();
+  if (!items.length) return;
+  const label = items.length === 1 ? items[0].name : `${items.length} media files`;
+  if (!window.confirm(`Move ${label} to data_store/trash/media?`)) return;
+  if (state.liveRunning) stopLiveDetection({ restorePreview: false });
+
+  els.removeSelectedMediaButton.disabled = true;
+  try {
+    const result = await postJson("/api/media/remove", {
+      folder: els.folderInput.value,
+      paths: items.map((item) => item.path),
+    });
+    if (result.error) {
+      showNotification(result.error, "error", 6000);
+      return;
+    }
+    clearRemovedMediaSelections(items.map((item) => item.path));
+    await scanFolder({ autoSelect: false });
+    const removed = (result.removed || []).length;
+    const failed = (result.failed || []).length;
+    showNotification(
+      failed ? `Moved ${removed}; ${failed} failed` : `Moved ${removed} media file${removed === 1 ? "" : "s"} to trash`,
+      failed ? "error" : "success",
+      5000,
+    );
+  } catch (_error) {
+    showNotification("Media removal failed", "error", 5000);
+  } finally {
+    updateRemoveMediaButton();
+  }
+}
+
+function clearRemovedMediaSelections(paths) {
+  const removed = new Set(paths);
+  state.liveSelectedMediaPaths = state.liveSelectedMediaPaths.filter((path) => !removed.has(path));
+  if (state.current && removed.has(state.current.path)) {
+    state.current = null;
+    state.currentIndex = -1;
+    state.boxes = [];
+    state.naturalWidth = 0;
+    state.naturalHeight = 0;
+    state.frameTime = null;
+    els.currentName.textContent = "No media selected";
+    els.video.pause();
+    els.video.removeAttribute("src");
+    els.video.style.display = "none";
+    els.image.removeAttribute("src");
+    els.image.style.display = "none";
+    els.canvas.style.display = "none";
+    setStatus("Media removed");
+    draw();
+  }
+  updateLiveMediaSourceInput();
 }
 
 function renderMediaItems(container, items, options) {
@@ -1032,6 +1312,8 @@ async function refreshLiveEvents() {
     els.liveRefreshEventsButton.disabled = true;
     const result = await getJson("/api/live/events?limit=50");
     state.liveEvents = result.events || [];
+    const eventIds = new Set(state.liveEvents.map((event) => event.event_id).filter(Boolean));
+    state.selectedLiveEventIds = new Set([...state.selectedLiveEventIds].filter((eventId) => eventIds.has(eventId)));
     renderLiveEvents();
   } catch (_error) {
     els.liveEventsUpdatedAt.textContent = "Events unavailable";
@@ -1044,16 +1326,20 @@ function renderLiveEvents() {
   els.liveEventsUpdatedAt.textContent = `Updated ${formatClock(new Date().toISOString())}`;
   if (!state.liveEvents.length) {
     els.liveEventList.innerHTML = `<div class="emptyState">No events yet</div>`;
+    updateRemoveEventsButton();
     return;
   }
 
   els.liveEventList.innerHTML = state.liveEvents.map((event) => liveEventMarkup(event)).join("");
+  updateRemoveEventsButton();
 }
 
 function liveEventMarkup(event) {
   const type = String(event.event_type || "event");
-  const source = shortSource(event.source || "");
+  const eventId = String(event.event_id || "");
+  const source = liveEventSourceText(event);
   const best = event.best_track || {};
+  const checked = eventId && state.selectedLiveEventIds.has(eventId) ? " checked" : "";
   const image = event.image_path
     ? `<img class="eventThumb" src="${mediaUrl(event.image_path)}" alt="">`
     : "";
@@ -1061,6 +1347,9 @@ function liveEventMarkup(event) {
   const imageClass = image ? "" : " noImage";
   return `
     <article class="eventItem ${eventClass(type)}${imageClass}">
+      <label class="eventSelect" title="Select event">
+        <input type="checkbox" data-event-id="${escapeHtml(eventId)}"${checked}>
+      </label>
       ${image}
       <div class="eventBody">
         <div class="eventTopline">
@@ -1074,11 +1363,71 @@ function liveEventMarkup(event) {
   `;
 }
 
+function onLiveEventSelectionChanged(event) {
+  const input = event.target.closest("input[data-event-id]");
+  if (!input) return;
+  const eventId = input.dataset.eventId;
+  if (!eventId) return;
+  if (input.checked) {
+    state.selectedLiveEventIds.add(eventId);
+  } else {
+    state.selectedLiveEventIds.delete(eventId);
+  }
+  updateRemoveEventsButton();
+}
+
+function updateRemoveEventsButton() {
+  const selectedCount = state.selectedLiveEventIds.size;
+  els.liveRemoveEventsButton.disabled = selectedCount === 0;
+  els.liveRemoveEventsButton.textContent = selectedCount > 1
+    ? `Remove ${selectedCount}`
+    : "Remove Selected";
+}
+
+async function removeSelectedEvents() {
+  const eventIds = [...state.selectedLiveEventIds];
+  if (!eventIds.length) return;
+  const label = eventIds.length === 1 ? "1 event" : `${eventIds.length} events`;
+  if (!window.confirm(`Remove ${label} from the live event log?`)) return;
+
+  els.liveRemoveEventsButton.disabled = true;
+  try {
+    const result = await postJson("/api/live/events/remove", { event_ids: eventIds });
+    if (result.error) {
+      showNotification(result.error, "error", 6000);
+      return;
+    }
+    state.selectedLiveEventIds.clear();
+    await refreshLiveEvents();
+    const removed = (result.removed || []).length;
+    const failed = (result.failed || []).length;
+    showNotification(
+      failed ? `Removed ${removed}; ${failed} failed` : `Removed ${removed} event${removed === 1 ? "" : "s"}`,
+      failed ? "error" : "success",
+      5000,
+    );
+  } catch (_error) {
+    showNotification("Event removal failed", "error", 5000);
+  } finally {
+    updateRemoveEventsButton();
+  }
+}
+
+function liveEventSourceText(event) {
+  const source = shortSource(event.source || "");
+  const sourceId = String(event.source_id || "");
+  if (sourceId && source && sourceId !== source) return `${sourceId} · ${source}`;
+  return sourceId || source;
+}
+
 function eventTitle(type) {
   if (type === "drone_detected") return "Drone detected";
   if (type === "recording_started") return "Recording started";
   if (type === "recording_saved") return "Recording saved";
   if (type === "recording_skipped") return "Recording skipped";
+  if (type === "detector_ready") return "Detector ready";
+  if (type === "source_reconnect") return "Source reconnect";
+  if (type === "source_reconnected") return "Source reconnected";
   return type.replaceAll("_", " ");
 }
 

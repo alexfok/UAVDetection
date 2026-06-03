@@ -172,8 +172,17 @@ label {
   min-width: 180px;
 }
 
+#liveCameraSelect {
+  min-height: 82px;
+  padding: 6px;
+}
+
+#liveCameraSelect option {
+  padding: 3px 4px;
+}
+
 .field.tiny {
-  width: 88px;
+  width: 96px;
 }
 
 .toggleField {
@@ -549,6 +558,50 @@ label {
   background: #050607;
 }
 
+.liveStreamGrid {
+  display: none;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+.liveStreamTile {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #101315;
+  overflow: hidden;
+}
+
+.liveStreamTileHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.liveStreamTileHeader strong,
+.liveStreamTileHeader span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.liveStreamTileHeader strong {
+  color: var(--text);
+}
+
+.liveStreamImage {
+  display: block;
+  width: 100%;
+  max-height: calc(100vh - 230px);
+  object-fit: contain;
+  background: #050607;
+}
+
 .livePlaceholder {
   min-height: 240px;
   width: 100%;
@@ -701,7 +754,7 @@ label {
 
 .eventItem {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-columns: 22px 72px minmax(0, 1fr);
   gap: 9px;
   margin-bottom: 8px;
   padding: 8px;
@@ -711,7 +764,21 @@ label {
 }
 
 .eventItem.noImage {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: 22px minmax(0, 1fr);
+}
+
+.eventSelect {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 2px;
+}
+
+.eventSelect input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
 }
 
 .eventItem.alert {

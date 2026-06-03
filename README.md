@@ -15,6 +15,17 @@ The default live detector uses the current trained single-class drone model (`da
 
 Raw media, generated reports, annotated videos, local model weights, and local run artifacts are intentionally ignored by Git.
 
+## License
+
+This project is licensed under the GNU Affero General Public License v3.0 only
+(`AGPL-3.0-only`). See `LICENSE`.
+
+The AGPL license is intentional because the current runtime and model workflow
+uses Ultralytics YOLO under its AGPL-3.0 licensing path. Commercial use is still
+possible under AGPL, but redistributed or network-accessible modified versions
+must satisfy AGPL source availability requirements. See `THIRD_PARTY_NOTICES.md`
+for the main third-party software and model lineage notes.
+
 ## Two-Step Deployment
 
 On a new machine, project deployment is intentionally split into code and data:
@@ -614,3 +625,25 @@ Demo feedback:
 2. Done: Windows recording filenames now use `record_DDMM_HH-MM.mp4` because `:` is illegal in Windows paths.
 3. CLI added: incremental training can build snapshots for all annotations, annotations since the last training metadata/model timestamp, or an inclusive saved-at date range.
 4. Camera direction: prefer an outdoor IP camera with RTSP/H.264 for field use; for quick mobile tests, add a client-side `getUserMedia` phone/browser source that sends frames to the server.
+
+For detection mode:
+1. Add them statically to available cameras
+2. Allow multiple cameras selection
+3. Show all selected cameras preview
+4. Run detection jobs for all selected cameras
+5. Add camera source to detection event
+
+Legal and commercial project aspects
+1. I want to do commercial use of the project while keeping it open source. What kind of license should I add to git?
+2. Is it ok to use all 3rd party SW and model we used and should we mention it somewhere?
+3. Where can I publish\store the dataset?
+4. Where can\should I publish\store the trained model?
+
+
+
+1. Suggest drone detection event notification alarm - I want to think about it
+2. prepare full upgrade for MAC\Linux & Windows
+3. sync git
+4. sync data storage on gdrive
+5. Test on mobile preview tales navigation with finger
+6. Create a testing infra + coverage
