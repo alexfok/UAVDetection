@@ -8,6 +8,11 @@ from datetime import date, datetime, time
 from pathlib import Path
 
 import yaml
+
+from app.torchvision_compat import install_torchvision_nms_fallback
+
+install_torchvision_nms_fallback()
+
 from ultralytics import YOLO
 
 

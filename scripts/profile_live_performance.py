@@ -21,6 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default="data_store/models/trained/yolov8n_drone_best.pt")
     parser.add_argument("--conf", type=float, default=0.5)
     parser.add_argument("--imgsz", type=int, default=640)
+    parser.add_argument("--device", default="", help="Ultralytics device value, e.g. cpu, mps, 0/cuda:0. Empty means auto.")
     parser.add_argument("--max-width", type=int, default=1280)
     parser.add_argument("--max-height", type=int, default=720)
     parser.add_argument("--jpeg-quality", type=int, default=80)
@@ -59,9 +60,12 @@ def main() -> int:
 
     import os
     import statistics
+    import tempfile
     import threading
-    os.environ.setdefault("YOLO_CONFIG_DIR", "/private/tmp/ultralytics")
-    os.environ.setdefault("MPLCONFIGDIR", "/private/tmp/matplotlib")
+
+    temp_root = Path(tempfile.gettempdir())
+    os.environ.setdefault("YOLO_CONFIG_DIR", str(temp_root / "ultralytics"))
+    os.environ.setdefault("MPLCONFIGDIR", str(temp_root / "matplotlib"))
 
     import cv2
 
@@ -94,6 +98,7 @@ def main() -> int:
                     model_path=args.model,
                     confidence_threshold=args.conf,
                     image_size=args.imgsz,
+                    device=args.device,
                 )
             )
             self.load_ms = (time.perf_counter() - started) * 1000

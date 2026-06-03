@@ -13,6 +13,8 @@ import cv2
 import numpy as np
 import yaml
 
+from app.torchvision_compat import install_torchvision_nms_fallback
+
 
 VIDEO_EXTENSIONS = {".avi", ".m4v", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"}
 IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
@@ -69,6 +71,7 @@ def main() -> int:
     source_class_ids: list[int] = []
     model_names: dict[int, str] = {}
     if args.seed_proxy_labels:
+        install_torchvision_nms_fallback()
         from ultralytics import YOLO
 
         model = YOLO(args.model)

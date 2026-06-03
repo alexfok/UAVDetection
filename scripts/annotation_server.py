@@ -557,7 +557,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         confidence = parse_float(query_value(query, "conf", "0.5"), 0.5)
         iou = parse_float(query_value(query, "iou", "0.45"), 0.45)
         image_size = parse_int(query_value(query, "imgsz", "640")) or 640
-        device = query_value(query, "device", "")
+        device = normalise_device_value(query_value(query, "device", ""))
         frame_skip = max(0, parse_int(query_value(query, "frame_skip", "0")))
         preview_fps = max(0.1, parse_float(query_value(query, "preview_fps", query_value(query, "max_fps", "5")), 5.0))
         legacy_max_fps = query_value(query, "max_fps", "")
@@ -1396,6 +1396,11 @@ def query_value(query: dict[str, list[str]], name: str, default: str) -> str:
     return str(values[0] or default)
 
 
+def normalise_device_value(value: str) -> str:
+    device = str(value or "").strip()
+    return "" if device.lower() == "auto" else device
+
+
 def parse_float(value: object, default: float) -> float:
     try:
         return float(str(value))
@@ -1555,7 +1560,7 @@ def start_training_process(server: AnnotationServer, payload: dict[str, object])
     batch = clamp_int(payload.get("batch"), 1, 128, 8)
     workers = clamp_int(payload.get("workers"), 0, 16, 0)
     patience = clamp_int(payload.get("patience"), 1, 100, 8)
-    device = str(payload.get("device") or "").strip()
+    device = normalise_device_value(str(payload.get("device") or ""))
     prepare_only = parse_bool(payload.get("prepare_only"))
     from_date = str(payload.get("from_date") or "").strip()
     to_date = str(payload.get("to_date") or "").strip()

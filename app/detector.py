@@ -4,6 +4,11 @@ import logging
 from typing import Iterable
 
 import numpy as np
+
+from app.torchvision_compat import install_torchvision_nms_fallback
+
+install_torchvision_nms_fallback()
+
 from ultralytics import YOLO
 
 from app.config import DetectorConfig
