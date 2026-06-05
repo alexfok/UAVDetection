@@ -16,6 +16,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_URL_HOST = "127.0.0.1"
 SERVICE_LABEL = "com.uavdetection.annotation-server"
+CAMERA_CONFIG_RELATIVE = Path("data_store/system_config/cameras.yaml")
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,7 +34,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Replace an existing --install-dir before copying from the USB bundle.",
+        help="Delete and fully replace an existing --install-dir, including data_store. Use only when local data can be discarded.",
+    )
+    parser.add_argument(
+        "--no-camera-config-update",
+        action="store_true",
+        help="Do not refresh data_store/system_config/cameras.yaml from the USB bundle when updating an existing install.",
+    )
+    parser.add_argument(
+        "--update-existing",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument("--host", default="0.0.0.0", help="Server bind host.")
     parser.add_argument("--port", type=int, default=8765, help="Server port.")
@@ -61,6 +72,9 @@ def main() -> int:
         return copy_and_reinvoke(args, install_dir)
 
     os.chdir(PROJECT_ROOT)
+    preserve_data_store = args.update_existing and (PROJECT_ROOT / "data_store").exists()
+    if preserve_data_store:
+        preserve_existing_credentials(args)
 
     venv_python = PROJECT_ROOT / args.venv / bin_dir() / "python"
     if not args.skip_deps:
@@ -69,9 +83,11 @@ def main() -> int:
     elif not venv_python.exists():
         venv_python = Path(sys.executable)
 
-    if not args.dry_run:
+    if not args.dry_run and not preserve_data_store:
         run([str(venv_python), "scripts/datastore_sync.py", "init"], check=True)
         write_server_env(args)
+    elif not args.dry_run:
+        maybe_write_server_env_for_update(args)
 
     scheme = "http" if args.no_https else "https"
     certfile = PROJECT_ROOT / "data_store/system_config/certs/annotation.crt"
@@ -109,26 +125,83 @@ def copy_and_reinvoke(args: argparse.Namespace, install_dir: Path) -> int:
         print("DRY RUN: re-run installer from local install directory")
         return 0
 
-    copy_project_to_install_dir(PROJECT_ROOT, install_dir, force=args.force)
-    command = [sys.executable, str(install_dir / "scripts/install_offline_deployment.py"), *reinvoke_args()]
+    update_existing = copy_project_to_install_dir(
+        PROJECT_ROOT,
+        install_dir,
+        force=args.force,
+        update_camera_config=not args.no_camera_config_update,
+    )
+    command = [sys.executable, str(install_dir / "scripts/install_offline_deployment.py"), *reinvoke_args(update_existing)]
     print(f"Copied project to local install directory: {install_dir}")
     return subprocess.run(command, cwd=install_dir).returncode
 
 
-def reinvoke_args() -> list[str]:
+def reinvoke_args(update_existing: bool) -> list[str]:
     args = list(sys.argv[1:])
     if "--in-place" not in args:
         args.append("--in-place")
+    if update_existing and "--update-existing" not in args:
+        args.append("--update-existing")
     return args
 
 
-def copy_project_to_install_dir(source: Path, destination: Path, force: bool) -> None:
+def copy_project_to_install_dir(source: Path, destination: Path, force: bool, update_camera_config: bool) -> bool:
     if destination.exists():
-        if not force:
-            raise SystemExit(f"Install directory already exists: {destination}. Use --force to replace it.")
-        shutil.rmtree(destination)
+        if force:
+            shutil.rmtree(destination)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source, destination, ignore=install_copy_ignore, copy_function=safe_copy_file)
+            return False
+
+        update_existing_install(source, destination, update_camera_config)
+        return True
+
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source, destination, ignore=install_copy_ignore, copy_function=safe_copy_file)
+    return False
+
+
+def update_existing_install(source: Path, destination: Path, update_camera_config: bool) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    for item in source.iterdir():
+        if item.name in {".venv", "data_store", "__pycache__", ".pytest_cache", ".DS_Store"}:
+            continue
+        target = destination / item.name
+        if item.is_dir():
+            shutil.copytree(item, target, ignore=install_update_ignore, copy_function=safe_copy_file, dirs_exist_ok=True)
+        elif item.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            safe_copy_file(item, target)
+
+    if update_camera_config:
+        refresh_camera_config(source / CAMERA_CONFIG_RELATIVE, destination / CAMERA_CONFIG_RELATIVE)
+
+
+def install_update_ignore(directory: str, names: list[str]) -> set[str]:
+    ignored: set[str] = set()
+    for name in names:
+        path = Path(directory) / name
+        if name in {".venv", "data_store", "__pycache__", ".pytest_cache", ".DS_Store"}:
+            ignored.add(name)
+        elif path.suffix == ".pyc":
+            ignored.add(name)
+    return ignored
+
+
+def refresh_camera_config(source: Path, destination: Path) -> None:
+    if not source.exists():
+        print(f"Camera config update skipped; bundle file not found: {source}")
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists() and destination.read_bytes() == source.read_bytes():
+        print(f"Camera config already current: {destination}")
+        return
+    if destination.exists():
+        backup = destination.with_name(f"{destination.name}.backup_{timestamp()}")
+        safe_copy_file(destination, backup)
+        print(f"Backed up existing camera config: {backup}")
+    safe_copy_file(source, destination)
+    print(f"Updated camera config: {destination}")
 
 
 def install_copy_ignore(directory: str, names: list[str]) -> set[str]:
@@ -197,6 +270,43 @@ def write_server_env(args: argparse.Namespace) -> None:
         env_path.chmod(0o600)
     except OSError:
         pass
+
+
+def maybe_write_server_env_for_update(args: argparse.Namespace) -> None:
+    env_path = PROJECT_ROOT / "data_store/system_config/annotation_server.env"
+    if env_path.exists() and not (option_was_passed("--username") or option_was_passed("--password")):
+        return
+    write_server_env(args)
+
+
+def preserve_existing_credentials(args: argparse.Namespace) -> None:
+    env_path = PROJECT_ROOT / "data_store/system_config/annotation_server.env"
+    values = read_env_file(env_path)
+    if not option_was_passed("--username") and values.get("ANNOTATION_SERVER_USERNAME"):
+        args.username = values["ANNOTATION_SERVER_USERNAME"]
+    if not option_was_passed("--password") and values.get("ANNOTATION_SERVER_PASSWORD"):
+        args.password = values["ANNOTATION_SERVER_PASSWORD"]
+
+
+def read_env_file(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return values
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
+
+
+def option_was_passed(name: str) -> bool:
+    return any(arg == name or arg.startswith(f"{name}=") for arg in sys.argv[1:])
 
 
 def server_env(args: argparse.Namespace) -> dict[str, str]:
@@ -393,6 +503,12 @@ def write_windows_start_script(command: list[str], env: dict[str, str], dry_run:
 def windows_quote(value: str) -> str:
     escaped = value.replace('"', r'\"')
     return f'"{escaped}"'
+
+
+def timestamp() -> str:
+    from datetime import datetime
+
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
 def configure_browser_start_pages(url: str, dry_run: bool) -> None:

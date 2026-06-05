@@ -27,6 +27,13 @@ python3 scripts/prepare_offline_deployment.py /Volumes/ESD-USB \
 
 That bundle includes this `data_store/` directory, the project code, install scripts, and a Python wheelhouse when available. On macOS/Linux, run `./install_offline.sh` from the bundle root. On Windows, run `.\install_offline.ps1` or `install_offline.cmd` from the bundle root.
 
+On a clean Windows machine, the installer copies the full bundled `data_store/`.
+On an existing Windows install, the same installer preserves the installed
+`data_store/` and updates only `system_config/cameras.yaml`, backing up the
+previous file as `cameras.yaml.backup_YYYYMMDD_HHMMSS`. Use `--force` only when
+you intentionally want to replace the whole install directory, including local
+data.
+
 Expected layout:
 
 ```text

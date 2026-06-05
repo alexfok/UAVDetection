@@ -103,7 +103,8 @@ Or from Command Prompt:
 E:\UAVDetection_offline_current\install_offline.cmd
 ```
 
-The installer copies the bundled project to `~/UAVDetection` by default, then:
+On a clean target, the installer copies the bundled project to `~/UAVDetection`
+on macOS/Linux or `%USERPROFILE%\UAVDetection` on Windows by default, then:
 
 - creates `.venv`
 - installs Python packages from `UAVDetection/wheelhouse/` without contacting the Internet
@@ -112,6 +113,15 @@ The installer copies the bundled project to `~/UAVDetection` by default, then:
 - installs automatic server startup on login/boot (`launchd` on macOS, user `systemd` on Linux, scheduled task on Windows)
 - updates common browser home/start pages to the local server URL when browser profiles are found
 - writes a local shortcut file, `UAVDetection_Server.url`
+
+On an existing Windows install, run the same `install_offline.ps1` or
+`install_offline.cmd` from the new USB bundle. The installer updates code,
+scripts, web UI files, docs, and wheelhouse files while preserving the installed
+`data_store/`. The only `data_store` file intentionally refreshed during this
+safe update is `data_store/system_config/cameras.yaml`; the previous camera file
+is backed up as `cameras.yaml.backup_YYYYMMDD_HHMMSS`. Existing raw media,
+annotations, detection results, model files, certificates, and saved server
+credentials remain in place unless you pass an explicit option to replace them.
 
 ### Windows Patch Deployment
 
@@ -148,8 +158,9 @@ Useful installer options:
 
 ```bash
 ./install_offline.sh --install-dir ~/UAVDetection
-./install_offline.sh --install-dir ~/UAVDetection --force
+./install_offline.sh --install-dir ~/UAVDetection --force  # destructive full replace, including data_store
 ./install_offline.sh --password admin123
+./install_offline.sh --no-camera-config-update
 ./install_offline.sh --no-browser-homepage
 ./install_offline.sh --no-autostart
 ./install_offline.sh --allow-online

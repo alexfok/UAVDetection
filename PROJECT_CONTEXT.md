@@ -343,7 +343,9 @@ cd E:\UAVDetection_offline_current
 .\install_offline.ps1
 ```
 
-The installer copies the project to `~/UAVDetection` on macOS/Linux or `%USERPROFILE%\UAVDetection` on Windows by default, creates `.venv`, installs dependencies from the wheelhouse, initializes `data_store`, installs an autostart service, and points common browser home/start pages to `https://127.0.0.1:8765`. Default login is `admin / admin123` unless overridden with `--password <value>`. Use `--install-dir <path>` for a different target directory, or `--force` to replace an existing install directory.
+The installer copies the project to `~/UAVDetection` on macOS/Linux or `%USERPROFILE%\UAVDetection` on Windows by default, creates `.venv`, installs dependencies from the wheelhouse, initializes `data_store`, installs an autostart service, and points common browser home/start pages to `https://127.0.0.1:8765`. Default login is `admin / admin123` unless overridden with `--password <value>`. Use `--install-dir <path>` for a different target directory.
+
+For an existing Windows install, run the same `install_offline.ps1` or `install_offline.cmd` from the new bundle. It updates code/support files and preserves the installed `data_store/`; only `data_store/system_config/cameras.yaml` is refreshed, with a timestamped backup of the previous camera file. Existing raw media, annotations, results, models, certs, and credentials stay in place. Use `--no-camera-config-update` to skip that camera refresh. Use `--force` only for a destructive full replace of the install directory, including `data_store/`.
 
 Platform caveat: build the wheelhouse on the same platform family as the target. A macOS bundle is not a Jetson/Linux ARM dependency bundle.
 
