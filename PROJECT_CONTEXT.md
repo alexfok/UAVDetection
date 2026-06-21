@@ -449,7 +449,7 @@ MPLCONFIGDIR=/private/tmp/matplotlib XDG_CACHE_HOME=/private/tmp MPLBACKEND=Agg 
 2. Add annotations for false positives and false negatives discovered during that review.
 3. Build a more reliable validation/test split; keep a reviewed holdout set that is not used for training.
 4. Retrain YOLOv8n after adding more diverse positives and negatives.
-5. Tune confidence threshold and frame sampling for field use. Current detection used `conf=0.5`, `iou=0.45`, `imgsz=640`.
+5. Tune confidence threshold and frame sampling for field use. The June 20 IP-camera field run used the preview stream with `conf=0.5`, `iou=0.45`, `imgsz=640`; defaults now favor candidate capture on the main stream with `conf=0.3`, `imgsz=960`, and a 1080p output cap.
 6. Compare the retrained model against both the COCO proxy baseline and the external YOLO11x drone model.
 7. Deploy the best candidate to Jetson for RTSP/FPS testing and TensorRT export.
 8. Later, evaluate external datasets such as `lgrzybowski/seraphim-drone-detection-dataset`, excluding irrelevant Shahed-style content if needed.

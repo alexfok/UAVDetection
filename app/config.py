@@ -9,8 +9,8 @@ from typing import Any
 class VideoConfig:
     source: str = "0"
     camera_config: str = "data_store/system_config/cameras.yaml"
-    resize_width: int = 1280
-    resize_height: int = 720
+    resize_width: int = 1920
+    resize_height: int = 1080
     frame_skip: int = 0
     reconnect_attempts: int = 5
     reconnect_delay_sec: float = 2.0
@@ -20,9 +20,9 @@ class VideoConfig:
 @dataclass
 class DetectorConfig:
     model_path: str = "data_store/models/trained/yolov8n_drone_best.pt"
-    confidence_threshold: float = 0.5
+    confidence_threshold: float = 0.3
     iou_threshold: float = 0.45
-    image_size: int = 640
+    image_size: int = 960
     device: str = ""
     target_classes: list[str] = field(default_factory=lambda: ["drone"])
     label_aliases: dict[str, str] = field(
@@ -42,7 +42,7 @@ class TrackerConfig:
 
 @dataclass
 class AlertConfig:
-    confidence_threshold: float = 0.5
+    confidence_threshold: float = 0.3
     persistence_frames: int = 5
     window_seconds: float = 2.0
     cooldown_seconds: float = 1.0

@@ -3,8 +3,8 @@ video:
   # an RTSP URL, a video file, or an image file.
   source: "0"
   camera_config: "data_store/system_config/cameras.yaml"
-  resize_width: 1280
-  resize_height: 720
+  resize_width: 1920
+  resize_height: 1080
   frame_skip: 0
   reconnect_attempts: 5
   reconnect_delay_sec: 2.0
@@ -12,9 +12,9 @@ video:
 
 detector:
   model_path: "data_store/models/trained/yolov8n_drone_best.pt"
-  confidence_threshold: 0.5
+  confidence_threshold: 0.3
   iou_threshold: 0.45
-  image_size: 640
+  image_size: 960
   # Empty string lets Ultralytics choose. Examples: "cpu", "mps" on Apple Silicon, "0" for CUDA.
   device: ""
   # With the trained model, "drone" resolves directly to the model's drone class.
@@ -31,7 +31,7 @@ tracker:
   min_box_area: 8
 
 alert:
-  confidence_threshold: 0.5
+  confidence_threshold: 0.3
   persistence_frames: 5
   window_seconds: 2.0
   cooldown_seconds: 1.0

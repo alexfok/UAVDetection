@@ -554,18 +554,18 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         camera_profile = query_value(query, "camera_profile", "main").strip().lower() or "main"
 
         model_path = resolve_user_path(query_value(query, "model", str(self.server.live_model)))
-        confidence = parse_float(query_value(query, "conf", "0.5"), 0.5)
+        confidence = parse_float(query_value(query, "conf", "0.3"), 0.3)
         iou = parse_float(query_value(query, "iou", "0.45"), 0.45)
-        image_size = parse_int(query_value(query, "imgsz", "640")) or 640
+        image_size = parse_int(query_value(query, "imgsz", "960")) or 960
         device = normalise_device_value(query_value(query, "device", ""))
         frame_skip = max(0, parse_int(query_value(query, "frame_skip", "0")))
-        preview_fps = max(0.1, parse_float(query_value(query, "preview_fps", query_value(query, "max_fps", "5")), 5.0))
+        preview_fps = max(0.1, parse_float(query_value(query, "preview_fps", query_value(query, "max_fps", "4")), 4.0))
         legacy_max_fps = query_value(query, "max_fps", "")
         detect_fps_default = legacy_max_fps if legacy_max_fps and not query_value(query, "preview_fps", "") else "2"
         detect_fps = max(0.1, parse_float(query_value(query, "detect_fps", detect_fps_default), 2.0))
-        max_width = max(0, parse_int(query_value(query, "max_width", "1280")))
-        max_height = max(0, parse_int(query_value(query, "max_height", "720")))
-        jpeg_quality = min(95, max(35, parse_int(query_value(query, "quality", "80"))))
+        max_width = max(0, parse_int(query_value(query, "max_width", "1920")))
+        max_height = max(0, parse_int(query_value(query, "max_height", "1080")))
+        jpeg_quality = min(95, max(35, parse_int(query_value(query, "quality", "85"))))
         read_failure_limit = max(5, parse_int(query_value(query, "read_failure_limit", "30")))
         reconnect_attempts = max(0, parse_int(query_value(query, "reconnect_attempts", "5")))
         reconnect_delay = max(0.1, parse_float(query_value(query, "reconnect_delay", "1.0"), 1.0))

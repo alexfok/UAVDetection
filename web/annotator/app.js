@@ -519,18 +519,18 @@ function liveStreamUrl(job) {
     params.set(key, value);
   });
   params.set("model", state.liveModelPath || "data_store/models/trained/yolov8n_drone_best.pt");
-  params.set("conf", els.liveConfInput.value || "0.5");
-  params.set("preview_fps", els.livePreviewFpsInput.value || "6");
+  params.set("conf", els.liveConfInput.value || "0.3");
+  params.set("preview_fps", els.livePreviewFpsInput.value || "4");
   params.set("detect_fps", els.liveDetectionFpsInput.value || "2");
-  params.set("max_fps", els.livePreviewFpsInput.value || "6");
+  params.set("max_fps", els.livePreviewFpsInput.value || "4");
   params.set("frame_skip", els.liveFrameSkipInput.value || "0");
-  params.set("imgsz", els.liveImageSizeInput.value || "640");
+  params.set("imgsz", els.liveImageSizeInput.value || "960");
   const previewSize = livePreviewSize();
   params.set("max_width", String(previewSize.width));
   params.set("max_height", String(previewSize.height));
-  params.set("quality", els.liveJpegQualityInput.value || "75");
+  params.set("quality", els.liveJpegQualityInput.value || "85");
   if (job.params && job.params.camera) {
-    params.set("camera_profile", els.liveCameraProfileSelect.value || "preview");
+    params.set("camera_profile", els.liveCameraProfileSelect.value || "main");
   }
   if (els.liveDeviceSelect.value) {
     params.set("device", els.liveDeviceSelect.value);
@@ -606,7 +606,7 @@ function applyLivePreset() {
   const presets = {
     balanced: { previewFps: "6", detectionFps: "2", skip: "0", imageSize: "640", previewSize: "1280x720", quality: "75" },
     fast: { previewFps: "10", detectionFps: "1.5", skip: "0", imageSize: "416", previewSize: "854x480", quality: "65" },
-    quality: { previewFps: "4", detectionFps: "3", skip: "0", imageSize: "960", previewSize: "1920x1080", quality: "85" },
+    quality: { previewFps: "4", detectionFps: "2", skip: "0", imageSize: "960", previewSize: "1920x1080", quality: "85" },
   };
   const preset = presets[els.livePresetSelect.value];
   if (!preset) return;
