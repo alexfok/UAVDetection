@@ -403,7 +403,26 @@ data_store/detection_results/live_events/YYYY-MM-DD/events.jsonl
 data_store/detection_results/live_events/YYYY-MM-DD/frames/<session_id>/*.jpg
 ```
 
-Event types include `start`, `stop`, `drone_detected`, `recording_started`, `recording_saved`, `recording_skipped`, and `error`. `drone_detected` rows include `tracks` with bounding boxes, object labels, confidence, and track IDs; recording events include whether the saved clip is a labeled demo or raw recording.
+Event types include `start`, `stop`, `drone_in_frame`, `drone_out_frame`, `drone_detected`, `recording_started`, `recording_saved`, `recording_skipped`, and `error`. `drone_in_frame` marks the first detection that starts a presence episode, and `drone_out_frame` closes that episode after the detector has not seen a drone for the configured absence timeout. `drone_detected` rows still save periodic JPEG snapshots and include `tracks` with bounding boxes, object labels, confidence, and track IDs; recording events include whether the saved clip is a labeled demo or raw recording.
+
+For field-test KPI review, first generate a CSV template from the live event logs:
+
+```bash
+python3 scripts/evaluate_detection_episodes.py \
+  data_store/detection_results/live_events/2026-06-20 \
+  --write-template /tmp/uav_episode_review_2026-06-20.csv
+```
+
+Fill `entry_frame` with the first frame where the drone is visible and `exit_frame` with the last visible frame for each reviewed pass. Then evaluate first-entry detection quality:
+
+```bash
+python3 scripts/evaluate_detection_episodes.py \
+  data_store/detection_results/live_events/2026-06-20 \
+  --episodes /tmp/uav_episode_review_2026-06-20.csv \
+  --deadline-frames 10
+```
+
+The report focuses on entry recall, on-time entry recall, first-detection latency, missed entries, and false entry events. Older logs that only contain `drone_detected` rows are grouped into legacy prediction episodes with `--out-gap-seconds`, falling back to `--out-gap-frames` if timestamps are missing.
 
 Saved annotations are written as a YOLO dataset:
 

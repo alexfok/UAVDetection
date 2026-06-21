@@ -19,6 +19,7 @@ import tempfile
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -35,6 +36,7 @@ IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 MEDIA_EXTENSIONS = VIDEO_EXTENSIONS | IMAGE_EXTENSIONS
 RECORDING_MAX_BYTES = 30 * 1024 * 1024
 RECORDING_ROLLOVER_BYTES = 28 * 1024 * 1024
+DEFAULT_PRESENCE_OUT_SECONDS = 2.0
 MANIFEST_FIELDS = [
     "image_id",
     "split",
@@ -569,6 +571,13 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         read_failure_limit = max(5, parse_int(query_value(query, "read_failure_limit", "30")))
         reconnect_attempts = max(0, parse_int(query_value(query, "reconnect_attempts", "5")))
         reconnect_delay = max(0.1, parse_float(query_value(query, "reconnect_delay", "1.0"), 1.0))
+        presence_out_seconds = max(
+            0.1,
+            parse_float(
+                query_value(query, "presence_out_seconds", str(DEFAULT_PRESENCE_OUT_SECONDS)),
+                DEFAULT_PRESENCE_OUT_SECONDS,
+            ),
+        )
         record_enabled = parse_bool(query_value(query, "record", "0"))
         record_labels = parse_bool(query_value(query, "record_labels", "0"))
         record_name_suffix = query_value(query, "record_name_suffix", "").strip()
@@ -660,6 +669,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 "read_failure_limit": read_failure_limit,
                 "reconnect_attempts": reconnect_attempts,
                 "reconnect_delay": reconnect_delay,
+                "presence_out_seconds": presence_out_seconds,
                 "recording_enabled": record_enabled,
                 "recording_labels": record_labels,
                 "recording_max_mb": round(record_max_bytes / 1024 / 1024, 1),
@@ -667,6 +677,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
             },
         )
         event_logger.log_start()
+        presence_state = DronePresenceState(out_seconds=presence_out_seconds)
         detector_state: dict[str, object] = {"detector": None, "error": ""}
 
         def load_detector_for_stream() -> None:
@@ -775,6 +786,10 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 payload = encoded.tobytes()
                 event_tracks = alert.tracks if alert.active and alert.tracks else tracks
                 event_now = time.monotonic()
+                if detection_ran:
+                    transition = presence_state.update(tracks, frame_index, event_now)
+                    if transition is not None:
+                        event_logger.log_presence_transition(transition)
                 if detection_ran and event_tracks and event_logger.should_log_detection(last_detection_event_at, event_now):
                     last_detection_event_at = event_now
                     event_logger.log_detection(event_tracks, frame_index, fps, payload)
@@ -801,6 +816,9 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 capture_worker.close()
             else:
                 cap.release()
+            transition = presence_state.close(frame_index, time.monotonic(), stop_reason)
+            if transition is not None:
+                event_logger.log_presence_transition(transition)
             event_logger.log_stop(stop_reason, frame_index)
 
     def send_static(self, path: Path, content_type: str | None = None) -> None:
@@ -1924,6 +1942,88 @@ class StreamRecorder:
         return candidate
 
 
+@dataclass
+class DronePresenceTransition:
+    event_type: str
+    episode_id: int
+    frame_index: int
+    entry_frame_index: int
+    last_seen_frame_index: int
+    best_track: object | None = None
+    tracks: list[object] | None = None
+    exit_frame_index: int | None = None
+    duration_seconds: float | None = None
+    absence_seconds: float | None = None
+    reason: str = ""
+
+
+class DronePresenceState:
+    def __init__(self, out_seconds: float = DEFAULT_PRESENCE_OUT_SECONDS) -> None:
+        self.out_seconds = out_seconds
+        self.in_frame = False
+        self.episode_id = 0
+        self.entry_frame_index = 0
+        self.entry_at = 0.0
+        self.last_seen_frame_index = 0
+        self.last_seen_at = 0.0
+        self.last_tracks: list[object] = []
+
+    def update(self, tracks: list[object], frame_index: int, now: float) -> DronePresenceTransition | None:
+        if tracks:
+            self.last_tracks = list(tracks)
+            best = max(tracks, key=lambda track: getattr(track, "confidence", 0.0))
+            if not self.in_frame:
+                self.episode_id += 1
+                self.in_frame = True
+                self.entry_frame_index = frame_index
+                self.entry_at = now
+                self.last_seen_frame_index = frame_index
+                self.last_seen_at = now
+                return DronePresenceTransition(
+                    event_type="drone_in_frame",
+                    episode_id=self.episode_id,
+                    frame_index=frame_index,
+                    entry_frame_index=frame_index,
+                    last_seen_frame_index=frame_index,
+                    best_track=best,
+                    tracks=list(tracks),
+                )
+
+            self.last_seen_frame_index = frame_index
+            self.last_seen_at = now
+            return None
+
+        if self.in_frame and self.last_seen_at > 0 and now - self.last_seen_at >= self.out_seconds:
+            return self._exit(frame_index, now, reason="absence_timeout")
+        return None
+
+    def close(self, frame_index: int, now: float, reason: str) -> DronePresenceTransition | None:
+        if not self.in_frame:
+            return None
+        return self._exit(frame_index, now, reason=reason or "stream_closed")
+
+    def _exit(self, frame_index: int, now: float, reason: str) -> DronePresenceTransition:
+        transition = DronePresenceTransition(
+            event_type="drone_out_frame",
+            episode_id=self.episode_id,
+            frame_index=frame_index,
+            entry_frame_index=self.entry_frame_index,
+            last_seen_frame_index=self.last_seen_frame_index,
+            exit_frame_index=frame_index,
+            duration_seconds=round(max(0.0, self.last_seen_at - self.entry_at), 3),
+            absence_seconds=round(max(0.0, now - self.last_seen_at), 3),
+            reason=reason,
+            tracks=list(self.last_tracks),
+        )
+        self.in_frame = False
+        self.entry_frame_index = 0
+        self.entry_at = 0.0
+        self.last_seen_frame_index = 0
+        self.last_seen_at = 0.0
+        self.last_tracks = []
+        return transition
+
+
 class LiveEventLogger:
     def __init__(
         self,
@@ -2029,6 +2129,29 @@ class LiveEventLogger:
 
     def should_log_detection(self, last_logged_at: float, now: float) -> bool:
         return last_logged_at <= 0 or now - last_logged_at >= self.detection_cooldown_seconds
+
+    def log_presence_transition(self, transition: DronePresenceTransition) -> None:
+        payload: dict[str, object] = {
+            "event_type": transition.event_type,
+            "episode_id": transition.episode_id,
+            "frame_index": transition.frame_index,
+            "entry_frame_index": transition.entry_frame_index,
+            "last_seen_frame_index": transition.last_seen_frame_index,
+            "elapsed_seconds": round(time.monotonic() - self.started_at, 3),
+        }
+        if transition.exit_frame_index is not None:
+            payload["exit_frame_index"] = transition.exit_frame_index
+        if transition.duration_seconds is not None:
+            payload["duration_seconds"] = transition.duration_seconds
+        if transition.absence_seconds is not None:
+            payload["absence_seconds"] = transition.absence_seconds
+        if transition.reason:
+            payload["reason"] = transition.reason
+        if transition.best_track is not None:
+            payload["best_track"] = serialise_track(transition.best_track)
+        if transition.tracks:
+            payload["tracks"] = [serialise_track(track) for track in transition.tracks]
+        self._append(payload)
 
     def log_detection(self, tracks: list[object], frame_index: int, fps: float, jpeg_bytes: bytes) -> None:
         self.detection_count += 1

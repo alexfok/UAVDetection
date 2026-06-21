@@ -1422,6 +1422,8 @@ function liveEventSourceText(event) {
 
 function eventTitle(type) {
   if (type === "drone_detected") return "Drone detected";
+  if (type === "drone_in_frame") return "Drone entered frame";
+  if (type === "drone_out_frame") return "Drone left frame";
   if (type === "recording_started") return "Recording started";
   if (type === "recording_saved") return "Recording saved";
   if (type === "recording_skipped") return "Recording skipped";
@@ -1432,16 +1434,21 @@ function eventTitle(type) {
 }
 
 function eventClass(type) {
-  if (type === "drone_detected") return "alert";
+  if (type === "drone_detected" || type === "drone_in_frame") return "alert";
   if (type === "error") return "error";
   return "";
 }
 
 function eventDetailText(type, event, best) {
-  if (type === "drone_detected") {
+  if (type === "drone_detected" || type === "drone_in_frame") {
     const confidence = Number(best.confidence || 0);
     const trackId = best.track_id ? ` #${best.track_id}` : "";
     return `${best.label || "drone"}${trackId} ${confidence.toFixed(2)} · frame ${formatInteger(event.frame_index)}`;
+  }
+  if (type === "drone_out_frame") {
+    const duration = Number(event.duration_seconds || 0);
+    const absence = Number(event.absence_seconds || 0);
+    return `last seen frame ${formatInteger(event.last_seen_frame_index)} · ${duration.toFixed(1)}s visible · ${absence.toFixed(1)}s absent`;
   }
   if (type === "stop") {
     return `${event.reason || "stopped"} · ${formatInteger(event.frames_seen)} frames · ${formatInteger(event.detection_events)} detections`;
