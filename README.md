@@ -243,6 +243,25 @@ git config core.hooksPath .githooks
 
 Setup/environment tests are intentionally separate from code tests. They should live behind a diagnostics/sysdump command and UI flow so hardware, camera, logs, and performance probes do not make normal code pushes flaky.
 
+Run a setup/environment check without camera hardware:
+
+```bash
+.venv/bin/python scripts/run_regression.py --setup
+```
+
+Run a field setup check against a configured camera:
+
+```bash
+.venv/bin/python scripts/run_environment_diagnostics.py sysdump \
+  --camera ip_camera_196 \
+  --profile main \
+  --seconds 3
+```
+
+The Diagnostics tab exposes the same setup test from the browser UI. It creates a redacted `sysdump_DDMMYY_HHMMSS.tar.gz` and matching `sysdump_DDMMYY_HHMMSS_report.md` under `data_store/detection_results/sysdumps/`. The sysdump includes system/package summaries, git state, redacted configuration, data-store stats, recent live-event errors, recent training/service log tails when present, and the current UI debug activity trail.
+
+The browser starts UI activity tracking by default when the app loads. It records bounded app actions and control changes into `data_store/detection_results/debug_sessions/*.jsonl` for later validation during a debug session; it does not capture keystrokes, screenshots, media payloads, or credentials.
+
 ## Live Detection Examples
 
 Embedded or default USB camera:

@@ -86,6 +86,11 @@ def main() -> int:
     server.local_camera_scan_running = False
     server.training_lock = threading.Lock()
     server.training_job = None
+    server.diagnostics_lock = threading.Lock()
+    server.diagnostics_job = None
+    server.debug_session_lock = threading.Lock()
+    server.debug_session_id = ""
+    server.debug_session_path = None
     server.detector_cache_lock = threading.Lock()
     server.detector_cache = {}
     server.live_model = resolve_user_path(args.live_model)
@@ -143,6 +148,11 @@ class AnnotationServer(ThreadingHTTPServer):
     local_camera_scan_running: bool
     training_lock: threading.Lock
     training_job: dict[str, object] | None
+    diagnostics_lock: threading.Lock
+    diagnostics_job: dict[str, object] | None
+    debug_session_lock: threading.Lock
+    debug_session_id: str
+    debug_session_path: Path | None
     detector_cache_lock: threading.Lock
     detector_cache: dict[tuple[object, ...], object]
     live_model: Path
@@ -288,6 +298,16 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/training/status":
             self.send_training_status()
             return
+        if parsed.path == "/api/diagnostics/status":
+            self.send_json(diagnostics_status_payload(self.server))
+            return
+        if parsed.path == "/api/diagnostics/download":
+            query = parse_qs(parsed.query)
+            self.send_diagnostics_artifact(
+                query_value(query, "run_id", ""),
+                query_value(query, "artifact", "report"),
+            )
+            return
         if parsed.path == "/api/live/stream":
             query = parse_qs(parsed.query)
             self.stream_live_detection(query)
@@ -333,6 +353,22 @@ class AnnotationHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/training/stop":
             self.stop_training_job()
+            return
+        if parsed.path == "/api/diagnostics/run":
+            payload = self.read_json()
+            self.start_diagnostics_job(payload)
+            return
+        if parsed.path == "/api/debug-session/start":
+            payload = self.read_json()
+            self.start_debug_session(payload)
+            return
+        if parsed.path == "/api/debug-session/event":
+            payload = self.read_json()
+            self.record_debug_session_event(payload)
+            return
+        if parsed.path == "/api/debug-session/stop":
+            payload = self.read_json()
+            self.stop_debug_session(payload)
             return
         if parsed.path == "/api/media/remove":
             payload = self.read_json()
@@ -499,6 +535,51 @@ class AnnotationHandler(BaseHTTPRequestHandler):
 
     def stop_training_job(self) -> None:
         self.send_json(stop_training_process(self.server))
+
+    def start_diagnostics_job(self, payload: dict[str, object]) -> None:
+        try:
+            self.send_json(start_diagnostics_process(self.server, payload))
+        except (RuntimeError, ValueError) as exc:
+            self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+    def start_debug_session(self, payload: dict[str, object]) -> None:
+        self.send_json(start_debug_session(self.server, payload))
+
+    def record_debug_session_event(self, payload: dict[str, object]) -> None:
+        self.send_json(record_debug_event(self.server, payload))
+
+    def stop_debug_session(self, payload: dict[str, object]) -> None:
+        self.send_json(stop_debug_session(self.server, payload))
+
+    def send_diagnostics_artifact(self, run_id: str, artifact: str) -> None:
+        run_id = safe_name(run_id)
+        artifact = artifact if artifact in {"report", "sysdump", "json"} else "report"
+        root = PROJECT_ROOT / "data_store" / "detection_results" / "sysdumps"
+        if artifact == "sysdump":
+            path = root / f"{run_id}.tar.gz"
+            content_type = "application/gzip"
+        elif artifact == "json":
+            path = root / run_id / "checks.json"
+            content_type = "application/json; charset=utf-8"
+        else:
+            path = root / run_id / f"{run_id}_report.md"
+            content_type = "text/markdown; charset=utf-8"
+        try:
+            path.resolve().relative_to(root.resolve())
+        except (OSError, ValueError):
+            self.send_error(HTTPStatus.FORBIDDEN, "Forbidden")
+            return
+        if not path.exists() or not path.is_file():
+            self.send_error(HTTPStatus.NOT_FOUND, "Diagnostics artifact not found")
+            return
+        data = path.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
+        self.send_no_cache_headers()
+        self.end_headers()
+        self.wfile.write(data)
 
     def remove_media(self, payload: dict[str, object]) -> None:
         folder = resolve_user_path(str(payload.get("folder") or self.server.default_folder))
@@ -1726,6 +1807,191 @@ def stop_training_process(server: AnnotationServer) -> dict[str, object]:
             job["status"] = "error"
             job["error"] = str(exc)
         return training_status_payload_from_job(job)
+
+
+def start_diagnostics_process(server: AnnotationServer, payload: dict[str, object]) -> dict[str, object]:
+    mode = str(payload.get("mode") or "quick").strip().lower()
+    if mode not in {"quick", "sysdump"}:
+        raise ValueError("mode must be quick or sysdump")
+
+    with server.diagnostics_lock:
+        existing = server.diagnostics_job
+        if existing and existing.get("status") == "running":
+            raise RuntimeError("Diagnostics job is already running")
+
+        stamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+        job_id = f"diag_{stamp}_{uuid.uuid4().hex[:8]}"
+        job: dict[str, object] = {
+            "id": job_id,
+            "status": "running",
+            "result_status": "",
+            "started_at": datetime.now().astimezone().isoformat(),
+            "ended_at": "",
+            "mode": mode,
+            "camera_id": str(payload.get("camera_id") or "").strip(),
+            "camera_profile": str(payload.get("camera_profile") or "main").strip().lower() or "main",
+            "camera_seconds": max(0.5, parse_float(payload.get("camera_seconds"), 3.0)),
+            "include_camera": parse_bool(payload.get("include_camera", True)),
+            "include_performance": parse_bool(payload.get("include_performance", False)),
+            "refresh_stats": parse_bool(payload.get("refresh_stats", False)),
+            "privacy": str(payload.get("privacy") or "normal").strip().lower() or "normal",
+            "checks": [],
+            "error": "",
+            "report": "",
+            "archive_path": "",
+            "report_path": "",
+            "run_id": "",
+            "sysdump_id": "",
+        }
+        server.diagnostics_job = job
+
+    thread = threading.Thread(target=run_diagnostics_job, args=(server, job_id), daemon=True)
+    thread.start()
+    return diagnostics_status_payload(server)
+
+
+def run_diagnostics_job(server: AnnotationServer, job_id: str) -> None:
+    with server.diagnostics_lock:
+        job = server.diagnostics_job if server.diagnostics_job and server.diagnostics_job.get("id") == job_id else None
+        if job is None:
+            return
+        options_payload = dict(job)
+
+    try:
+        from app.diagnostics import DiagnosticsOptions, run_diagnostics
+
+        result = run_diagnostics(
+            DiagnosticsOptions(
+                mode=str(options_payload.get("mode") or "quick"),
+                camera_id=str(options_payload.get("camera_id") or ""),
+                camera_profile=str(options_payload.get("camera_profile") or "main"),
+                camera_seconds=float(options_payload.get("camera_seconds") or 3.0),
+                include_camera=bool(options_payload.get("include_camera")),
+                include_performance=bool(options_payload.get("include_performance")),
+                refresh_stats=bool(options_payload.get("refresh_stats")),
+                privacy=str(options_payload.get("privacy") or "normal"),
+                server_context=diagnostics_server_context(server),
+            )
+        )
+        report_text = result.report_path.read_text(encoding="utf-8") if result.report_path.exists() else ""
+        with server.diagnostics_lock:
+            job = server.diagnostics_job if server.diagnostics_job and server.diagnostics_job.get("id") == job_id else None
+            if job is None:
+                return
+            job.update(
+                {
+                    "status": "completed",
+                    "result_status": result.status,
+                    "ended_at": datetime.now().astimezone().isoformat(),
+                    "checks": result.checks,
+                    "archive_path": portable_path(result.archive_path),
+                    "report_path": portable_path(result.report_path),
+                    "run_id": result.run_id,
+                    "sysdump_id": result.sysdump_id,
+                    "report": report_text,
+                }
+            )
+    except Exception as exc:
+        with server.diagnostics_lock:
+            job = server.diagnostics_job if server.diagnostics_job and server.diagnostics_job.get("id") == job_id else None
+            if job is not None:
+                job.update(
+                    {
+                        "status": "failed",
+                        "result_status": "fail",
+                        "ended_at": datetime.now().astimezone().isoformat(),
+                        "error": str(exc),
+                    }
+                )
+
+
+def diagnostics_status_payload(server: AnnotationServer) -> dict[str, object]:
+    with server.diagnostics_lock:
+        job = dict(server.diagnostics_job or {})
+    if not job:
+        return {"status": "idle", "checks": [], "report": ""}
+    job.pop("thread", None)
+    run_id = str(job.get("run_id") or "")
+    if run_id:
+        job["downloads"] = {
+            "report": f"/api/diagnostics/download?run_id={run_id}&artifact=report",
+            "sysdump": f"/api/diagnostics/download?run_id={run_id}&artifact=sysdump",
+            "json": f"/api/diagnostics/download?run_id={run_id}&artifact=json",
+        }
+    return job
+
+
+def diagnostics_server_context(server: AnnotationServer) -> dict[str, object]:
+    return {
+        "default_folder": str(server.default_folder),
+        "default_project_dir": str(server.default_project_dir),
+        "camera_config": str(server.camera_config),
+        "live_model": str(server.live_model),
+        "class_name": server.class_name,
+        "auth_enabled": server.auth_enabled,
+        "training": training_status_payload(server),
+        "debug_session_active": bool(server.debug_session_id),
+    }
+
+
+def start_debug_session(server: AnnotationServer, payload: dict[str, object]) -> dict[str, object]:
+    with server.debug_session_lock:
+        stamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+        session_id = f"debug_{stamp}_{uuid.uuid4().hex[:8]}"
+        path = PROJECT_ROOT / "data_store" / "detection_results" / "debug_sessions" / f"{session_id}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        server.debug_session_id = session_id
+        server.debug_session_path = path
+    append_debug_event(server, "debug_session_started", {"source": payload.get("source") or "ui"})
+    return {"active": True, "session_id": session_id}
+
+
+def record_debug_event(server: AnnotationServer, payload: dict[str, object]) -> dict[str, object]:
+    session_id = str(payload.get("session_id") or "")
+    with server.debug_session_lock:
+        active_id = server.debug_session_id
+    if not active_id:
+        return {"active": False, "recorded": False}
+    if session_id and session_id != active_id:
+        return {"active": True, "recorded": False, "error": "debug session id mismatch", "session_id": active_id}
+    event_type = safe_name(str(payload.get("event_type") or "ui_event"))
+    details = payload.get("details") if isinstance(payload.get("details"), dict) else {}
+    append_debug_event(server, event_type, details)
+    return {"active": True, "recorded": True, "session_id": active_id}
+
+
+def stop_debug_session(server: AnnotationServer, payload: dict[str, object]) -> dict[str, object]:
+    session_id = str(payload.get("session_id") or "")
+    with server.debug_session_lock:
+        active_id = server.debug_session_id
+    if active_id and (not session_id or session_id == active_id):
+        append_debug_event(server, "debug_session_stopped", {"source": payload.get("source") or "ui"})
+        with server.debug_session_lock:
+            server.debug_session_id = ""
+            server.debug_session_path = None
+        return {"active": False, "session_id": active_id}
+    return {"active": bool(active_id), "session_id": active_id}
+
+
+def append_debug_event(server: AnnotationServer, event_type: str, details: dict[str, object]) -> None:
+    from app.diagnostics.redaction import redact_mapping
+
+    with server.debug_session_lock:
+        session_id = server.debug_session_id
+        path = server.debug_session_path
+    if not session_id or path is None:
+        return
+    row = {
+        "timestamp": datetime.now().astimezone().isoformat(),
+        "session_id": session_id,
+        "event_type": safe_name(event_type),
+        "details": redact_mapping(details),
+    }
+    try:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
+    except OSError:
+        return
 
 
 def training_status_payload(server: AnnotationServer) -> dict[str, object]:

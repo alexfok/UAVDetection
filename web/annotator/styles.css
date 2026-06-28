@@ -612,7 +612,8 @@ label {
   color: var(--muted);
 }
 
-.trainingDashboard {
+.trainingDashboard,
+.diagnosticsDashboard {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
@@ -724,6 +725,58 @@ label {
   font-size: 12px;
   line-height: 1.45;
   white-space: pre-wrap;
+}
+
+.diagnosticsCheckList {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.diagnosticsCheck {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid #2d3338;
+  border-radius: 6px;
+  background: #050607;
+}
+
+.diagnosticsCheck.pass {
+  border-color: var(--good);
+}
+
+.diagnosticsCheck.warn {
+  border-color: #b69d34;
+}
+
+.diagnosticsCheck.fail {
+  border-color: var(--danger);
+}
+
+.diagnosticsCheckStatus {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.diagnosticsCheckBody {
+  min-width: 0;
+}
+
+.diagnosticsCheckBody strong,
+.diagnosticsCheckBody span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diagnosticsCheckBody span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .eventsPanel {

@@ -13,6 +13,7 @@
         <button id="annotateTabButton" class="tabButton active" type="button">Annotate</button>
         <button id="liveTabButton" class="tabButton" type="button">Live Detection</button>
         <button id="trainingTabButton" class="tabButton" type="button">Training</button>
+        <button id="diagnosticsTabButton" class="tabButton" type="button">Diagnostics</button>
       </nav>
 
       <main class="workspace">
@@ -252,6 +253,46 @@
             </header>
           </section>
 
+          <section id="diagnosticsTab" class="modeToolbar">
+            <header class="topbar diagnosticsBar">
+              <div class="field medium">
+                <label for="diagnosticsCameraInput">Camera</label>
+                <input id="diagnosticsCameraInput" type="text" spellcheck="false" placeholder="ip_camera_196">
+              </div>
+              <div class="field small">
+                <label for="diagnosticsProfileSelect">Profile</label>
+                <select id="diagnosticsProfileSelect">
+                  <option value="main" selected>Main</option>
+                  <option value="preview">Preview</option>
+                </select>
+              </div>
+              <div class="field tiny">
+                <label for="diagnosticsSecondsInput">Seconds</label>
+                <input id="diagnosticsSecondsInput" type="number" min="0.5" max="30" step="0.5" value="3">
+              </div>
+              <div class="field small">
+                <label for="diagnosticsPrivacySelect">Privacy</label>
+                <select id="diagnosticsPrivacySelect">
+                  <option value="normal" selected>Normal</option>
+                  <option value="high">High</option>
+                </select>
+              </div>
+              <label class="toggleField" for="diagnosticsIncludeCameraInput">
+                <input id="diagnosticsIncludeCameraInput" type="checkbox" checked>
+                <span>Camera</span>
+              </label>
+              <label class="toggleField" for="diagnosticsIncludePerformanceInput">
+                <input id="diagnosticsIncludePerformanceInput" type="checkbox">
+                <span>Perf</span>
+              </label>
+              <button id="diagnosticsRunButton" type="button" class="primary">Run Setup Test</button>
+              <button id="diagnosticsRefreshButton" type="button">Refresh</button>
+              <button id="diagnosticsReportButton" type="button" disabled>Report</button>
+              <button id="diagnosticsSysdumpButton" type="button" disabled>Sysdump</button>
+              <span id="diagnosticsStatusText" class="status">Idle</span>
+            </header>
+          </section>
+
           <div id="annotationView" class="modeStage active">
             <div class="mediaTitle">
               <span id="currentName">No media selected</span>
@@ -317,6 +358,46 @@
                   <span id="trainingLogPath">No log file</span>
                 </div>
                 <pre id="trainingLog" class="trainingLog">No training output yet.</pre>
+              </section>
+            </div>
+          </div>
+
+          <div id="diagnosticsView" class="modeStage">
+            <div class="mediaTitle">
+              <strong>Setup Diagnostics</strong>
+              <span id="diagnosticsUpdatedAt">Not run</span>
+            </div>
+            <div class="diagnosticsDashboard">
+              <div class="trainingCards">
+                <section class="trainingCard">
+                  <span class="trainingLabel">State</span>
+                  <strong id="diagnosticsStateValue">Idle</strong>
+                  <span id="diagnosticsDetailValue" class="trainingMeta">No diagnostics run yet</span>
+                </section>
+                <section class="trainingCard">
+                  <span class="trainingLabel">Result</span>
+                  <strong id="diagnosticsResultValue">Pending</strong>
+                  <span id="diagnosticsCountsValue" class="trainingMeta">0 checks</span>
+                </section>
+                <section class="trainingCard">
+                  <span class="trainingLabel">Activity</span>
+                  <strong id="debugSessionStateValue">Starting</strong>
+                  <span id="debugSessionIdValue" class="trainingMeta">Debug session pending</span>
+                </section>
+              </div>
+              <section class="trainingLogPanel">
+                <div class="trainingLogHeader">
+                  <strong>Checks</strong>
+                  <span id="diagnosticsArtifactValue">No artifact</span>
+                </div>
+                <div id="diagnosticsCheckList" class="diagnosticsCheckList"></div>
+              </section>
+              <section class="trainingLogPanel">
+                <div class="trainingLogHeader">
+                  <strong>Report</strong>
+                  <span id="diagnosticsReportPath">No report</span>
+                </div>
+                <pre id="diagnosticsReport" class="trainingLog">No diagnostics report yet.</pre>
               </section>
             </div>
           </div>

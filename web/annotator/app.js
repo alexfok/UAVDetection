@@ -27,6 +27,10 @@ const state = {
   liveRecordingPollTimer: null,
   liveModelPath: "",
   trainingJob: null,
+  diagnosticsJob: null,
+  diagnosticsPollTimer: null,
+  debugSessionId: "",
+  debugTrackingReady: false,
 };
 
 const els = {
@@ -34,12 +38,15 @@ const els = {
   annotateTabButton: document.getElementById("annotateTabButton"),
   liveTabButton: document.getElementById("liveTabButton"),
   trainingTabButton: document.getElementById("trainingTabButton"),
+  diagnosticsTabButton: document.getElementById("diagnosticsTabButton"),
   annotationTab: document.getElementById("annotationTab"),
   liveTab: document.getElementById("liveTab"),
   trainingTab: document.getElementById("trainingTab"),
+  diagnosticsTab: document.getElementById("diagnosticsTab"),
   annotationView: document.getElementById("annotationView"),
   liveView: document.getElementById("liveView"),
   trainingView: document.getElementById("trainingView"),
+  diagnosticsView: document.getElementById("diagnosticsView"),
   folderInput: document.getElementById("folderInput"),
   projectInput: document.getElementById("projectInput"),
   splitSelect: document.getElementById("splitSelect"),
@@ -126,6 +133,28 @@ const els = {
   trainingProgressFill: document.getElementById("trainingProgressFill"),
   trainingLogPath: document.getElementById("trainingLogPath"),
   trainingLog: document.getElementById("trainingLog"),
+  diagnosticsCameraInput: document.getElementById("diagnosticsCameraInput"),
+  diagnosticsProfileSelect: document.getElementById("diagnosticsProfileSelect"),
+  diagnosticsSecondsInput: document.getElementById("diagnosticsSecondsInput"),
+  diagnosticsPrivacySelect: document.getElementById("diagnosticsPrivacySelect"),
+  diagnosticsIncludeCameraInput: document.getElementById("diagnosticsIncludeCameraInput"),
+  diagnosticsIncludePerformanceInput: document.getElementById("diagnosticsIncludePerformanceInput"),
+  diagnosticsRunButton: document.getElementById("diagnosticsRunButton"),
+  diagnosticsRefreshButton: document.getElementById("diagnosticsRefreshButton"),
+  diagnosticsReportButton: document.getElementById("diagnosticsReportButton"),
+  diagnosticsSysdumpButton: document.getElementById("diagnosticsSysdumpButton"),
+  diagnosticsStatusText: document.getElementById("diagnosticsStatusText"),
+  diagnosticsUpdatedAt: document.getElementById("diagnosticsUpdatedAt"),
+  diagnosticsStateValue: document.getElementById("diagnosticsStateValue"),
+  diagnosticsDetailValue: document.getElementById("diagnosticsDetailValue"),
+  diagnosticsResultValue: document.getElementById("diagnosticsResultValue"),
+  diagnosticsCountsValue: document.getElementById("diagnosticsCountsValue"),
+  diagnosticsArtifactValue: document.getElementById("diagnosticsArtifactValue"),
+  diagnosticsReportPath: document.getElementById("diagnosticsReportPath"),
+  diagnosticsReport: document.getElementById("diagnosticsReport"),
+  diagnosticsCheckList: document.getElementById("diagnosticsCheckList"),
+  debugSessionStateValue: document.getElementById("debugSessionStateValue"),
+  debugSessionIdValue: document.getElementById("debugSessionIdValue"),
 };
 
 const ctx = els.canvas.getContext("2d");
@@ -140,12 +169,14 @@ async function init() {
   state.liveModelPath = defaults.live_model || "data_store/models/trained/yolov8n_drone_best.pt";
   els.liveSourceInput.value = "0";
   bindEvents();
+  await startDefaultDebugSession();
   onTrainingScopeChanged();
   await loadLiveCameras();
   await loadLocalCameras();
   await scanFolder();
   await refreshLiveEvents();
   await refreshTrainingStatus();
+  await refreshDiagnosticsStatus();
   window.setInterval(refreshLiveEvents, 5000);
   window.setInterval(refreshTrainingStatus, 3000);
 }
@@ -154,6 +185,7 @@ function bindEvents() {
   els.annotateTabButton.addEventListener("click", () => showTab("annotate"));
   els.liveTabButton.addEventListener("click", () => showTab("live"));
   els.trainingTabButton.addEventListener("click", () => showTab("training"));
+  els.diagnosticsTabButton.addEventListener("click", () => showTab("diagnostics"));
   els.scanButton.addEventListener("click", scanFolder);
   els.folderInput.addEventListener("change", refreshStats);
   els.projectInput.addEventListener("change", refreshStats);
@@ -190,6 +222,10 @@ function bindEvents() {
   els.trainingStartButton.addEventListener("click", startTrainingJob);
   els.trainingStopButton.addEventListener("click", stopTrainingJob);
   els.trainingRefreshButton.addEventListener("click", refreshTrainingStatus);
+  els.diagnosticsRunButton.addEventListener("click", runDiagnostics);
+  els.diagnosticsRefreshButton.addEventListener("click", refreshDiagnosticsStatus);
+  els.diagnosticsReportButton.addEventListener("click", () => downloadDiagnosticsArtifact("report"));
+  els.diagnosticsSysdumpButton.addEventListener("click", () => downloadDiagnosticsArtifact("sysdump"));
   els.liveStream.addEventListener("load", () => {
     if (state.liveRunning) setLiveStatus("Streaming");
   });
@@ -220,21 +256,27 @@ function bindEvents() {
   els.canvas.addEventListener("pointerup", onPointerUp);
   window.addEventListener("resize", draw);
   window.addEventListener("keydown", onKeyDown);
+  bindDebugActivityTracking();
 }
 
 function showTab(name) {
   const live = name === "live";
   const training = name === "training";
-  state.mode = live ? "live" : training ? "training" : "annotate";
+  const diagnostics = name === "diagnostics";
+  state.mode = live ? "live" : training ? "training" : diagnostics ? "diagnostics" : "annotate";
   els.liveTab.classList.toggle("active", live);
   els.trainingTab.classList.toggle("active", training);
-  els.annotationTab.classList.toggle("active", !live && !training);
+  els.diagnosticsTab.classList.toggle("active", diagnostics);
+  els.annotationTab.classList.toggle("active", !live && !training && !diagnostics);
   els.liveView.classList.toggle("active", live);
   els.trainingView.classList.toggle("active", training);
-  els.annotationView.classList.toggle("active", !live && !training);
+  els.diagnosticsView.classList.toggle("active", diagnostics);
+  els.annotationView.classList.toggle("active", !live && !training && !diagnostics);
   els.liveTabButton.classList.toggle("active", live);
   els.trainingTabButton.classList.toggle("active", training);
-  els.annotateTabButton.classList.toggle("active", !live && !training);
+  els.diagnosticsTabButton.classList.toggle("active", diagnostics);
+  els.annotateTabButton.classList.toggle("active", !live && !training && !diagnostics);
+  trackUiActivity("tab_changed", { mode: state.mode });
   renderMediaList();
   if (live) {
     const selectedMedia = selectedLiveMediaItems();
@@ -245,6 +287,8 @@ function showTab(name) {
     }
   } else if (training) {
     refreshTrainingStatus();
+  } else if (diagnostics) {
+    refreshDiagnosticsStatus();
   } else {
     draw();
   }
@@ -255,6 +299,7 @@ async function loadLiveCameras() {
     const result = await getJson("/api/live/cameras");
     state.liveRegistryCameras = result.cameras || [];
     renderLiveCameraSelect();
+    updateDiagnosticsDefaultCamera();
     if (state.liveRegistryCameras.length) {
       setLiveStatus(`${state.liveRegistryCameras.length} cameras loaded`);
     }
@@ -301,6 +346,14 @@ function renderLiveCameraSelect() {
   [...els.liveCameraSelect.options].forEach((option) => {
     option.selected = previousValues.has(option.value);
   });
+}
+
+function updateDiagnosticsDefaultCamera() {
+  if (!els.diagnosticsCameraInput || els.diagnosticsCameraInput.value.trim()) return;
+  const firstCamera = state.liveRegistryCameras.find((camera) => camera && camera.enabled !== false);
+  if (firstCamera && firstCamera.id) {
+    els.diagnosticsCameraInput.value = firstCamera.id;
+  }
 }
 
 async function loadLocalCameras() {
@@ -418,6 +471,16 @@ function startLiveDetection() {
     return;
   }
   const recordingRequested = els.liveRecordInput.checked;
+  trackUiActivity("live_start_requested", {
+    source_count: jobs.length,
+    recording: recordingRequested,
+    labels: els.liveRecordLabelsInput.checked,
+    camera_profile: els.liveCameraProfileSelect.value,
+    conf: els.liveConfInput.value,
+    preview_fps: els.livePreviewFpsInput.value,
+    detect_fps: els.liveDetectionFpsInput.value,
+    imgsz: els.liveImageSizeInput.value,
+  });
   if (recordingRequested) {
     jobs.forEach((job) => {
       job.clientRunId = makeClientRunId();
@@ -446,6 +509,9 @@ function startLiveDetection() {
 function stopLiveDetection(options = {}) {
   const restorePreview = options.restorePreview !== false;
   const wasRecording = state.liveRecording;
+  if (state.liveRunning) {
+    trackUiActivity("live_stop_requested", { stream_count: state.liveStreamJobs.length, recording: wasRecording });
+  }
   state.liveRunning = false;
   state.liveRecording = false;
   state.liveStreamJobs = [];
@@ -793,6 +859,14 @@ async function startTrainingJob() {
 
   els.trainingStartButton.disabled = true;
   setTrainingStatus(payload.prepare_only ? "Preparing dataset..." : "Starting training...");
+  trackUiActivity("training_start_requested", {
+    dataset_scope: payload.dataset_scope,
+    prepare_only: payload.prepare_only,
+    epochs: payload.epochs,
+    imgsz: payload.imgsz,
+    batch: payload.batch,
+    device: payload.device || "auto",
+  });
   try {
     const result = await postJson("/api/training/start", payload);
     if (result.error) {
@@ -814,6 +888,7 @@ async function startTrainingJob() {
 async function stopTrainingJob() {
   try {
     setTrainingStatus("Stopping training...");
+    trackUiActivity("training_stop_requested", {});
     const result = await postJson("/api/training/stop", {});
     renderTrainingStatus(result);
   } catch (_error) {
@@ -828,6 +903,142 @@ async function refreshTrainingStatus() {
   } catch (_error) {
     setTrainingStatus("Training status unavailable");
   }
+}
+
+async function runDiagnostics() {
+  if (state.diagnosticsJob && state.diagnosticsJob.status === "running") return;
+  const payload = diagnosticsPayload();
+  try {
+    els.diagnosticsRunButton.disabled = true;
+    els.diagnosticsRunButton.setAttribute("aria-busy", "true");
+    setDiagnosticsStatus("Starting diagnostics...");
+    trackUiActivity("diagnostics_run_started", payload);
+    const result = await postJson("/api/diagnostics/run", payload);
+    if (result.error) {
+      showNotification(result.error, "error", 6000);
+      setDiagnosticsStatus(result.error);
+      return;
+    }
+    renderDiagnosticsStatus(result);
+    scheduleDiagnosticsPoll(800);
+    showNotification("Setup diagnostics started", "info", 3000);
+  } catch (_error) {
+    setDiagnosticsStatus("Diagnostics request failed");
+    showNotification("Diagnostics request failed", "error", 5000);
+  } finally {
+    updateDiagnosticsControls();
+    els.diagnosticsRunButton.removeAttribute("aria-busy");
+  }
+}
+
+function diagnosticsPayload() {
+  return {
+    mode: "sysdump",
+    camera_id: els.diagnosticsCameraInput.value.trim(),
+    camera_profile: els.diagnosticsProfileSelect.value || "main",
+    camera_seconds: Number(els.diagnosticsSecondsInput.value || 3),
+    include_camera: els.diagnosticsIncludeCameraInput.checked,
+    include_performance: els.diagnosticsIncludePerformanceInput.checked,
+    privacy: els.diagnosticsPrivacySelect.value || "normal",
+  };
+}
+
+async function refreshDiagnosticsStatus() {
+  try {
+    const result = await getJson("/api/diagnostics/status");
+    renderDiagnosticsStatus(result);
+  } catch (_error) {
+    setDiagnosticsStatus("Diagnostics status unavailable");
+  }
+}
+
+function renderDiagnosticsStatus(result) {
+  state.diagnosticsJob = result || { status: "idle", checks: [] };
+  const status = state.diagnosticsJob.status || "idle";
+  const resultStatus = state.diagnosticsJob.result_status || "";
+  const checks = Array.isArray(state.diagnosticsJob.checks) ? state.diagnosticsJob.checks : [];
+  const counts = diagnosticsCounts(checks);
+  els.diagnosticsStateValue.textContent = status;
+  els.diagnosticsResultValue.textContent = resultStatus || (status === "idle" ? "Pending" : status);
+  els.diagnosticsCountsValue.textContent = `${checks.length} checks · ${counts.pass} pass · ${counts.warn} warn · ${counts.fail} fail`;
+  els.diagnosticsDetailValue.textContent = state.diagnosticsJob.error || state.diagnosticsJob.sysdump_id || "Ready";
+  els.diagnosticsUpdatedAt.textContent = state.diagnosticsJob.ended_at
+    ? `Finished ${formatClock(state.diagnosticsJob.ended_at)}`
+    : state.diagnosticsJob.started_at
+      ? `Started ${formatClock(state.diagnosticsJob.started_at)}`
+      : "Not run";
+  els.diagnosticsArtifactValue.textContent = state.diagnosticsJob.archive_path || "No artifact";
+  els.diagnosticsReportPath.textContent = state.diagnosticsJob.report_path || "No report";
+  els.diagnosticsReport.textContent = state.diagnosticsJob.report || "No diagnostics report yet.";
+  renderDiagnosticsChecks(checks);
+  setDiagnosticsStatus(status === "running" ? "Diagnostics running..." : state.diagnosticsJob.error || status);
+  updateDiagnosticsControls();
+  if (status === "running") {
+    scheduleDiagnosticsPoll(1200);
+  } else if (state.diagnosticsPollTimer) {
+    window.clearTimeout(state.diagnosticsPollTimer);
+    state.diagnosticsPollTimer = null;
+  }
+}
+
+function diagnosticsCounts(checks) {
+  return checks.reduce((counts, check) => {
+    const status = String(check.status || "skip");
+    counts[status] = (counts[status] || 0) + 1;
+    return counts;
+  }, { pass: 0, warn: 0, fail: 0, skip: 0 });
+}
+
+function renderDiagnosticsChecks(checks) {
+  els.diagnosticsCheckList.innerHTML = "";
+  if (!checks.length) {
+    const empty = document.createElement("div");
+    empty.className = "emptyState";
+    empty.textContent = "No checks yet";
+    els.diagnosticsCheckList.appendChild(empty);
+    return;
+  }
+  checks.forEach((check) => {
+    const row = document.createElement("div");
+    const status = String(check.status || "skip");
+    row.className = `diagnosticsCheck ${status}`;
+    const statusEl = document.createElement("div");
+    statusEl.className = "diagnosticsCheckStatus";
+    statusEl.textContent = status;
+    const body = document.createElement("div");
+    body.className = "diagnosticsCheckBody";
+    const title = document.createElement("strong");
+    title.textContent = `${check.category || "check"} / ${check.name || "unnamed"}`;
+    const detail = document.createElement("span");
+    detail.textContent = String(check.detail || "");
+    body.append(title, detail);
+    row.append(statusEl, body);
+    els.diagnosticsCheckList.appendChild(row);
+  });
+}
+
+function scheduleDiagnosticsPoll(delayMs) {
+  if (state.diagnosticsPollTimer) window.clearTimeout(state.diagnosticsPollTimer);
+  state.diagnosticsPollTimer = window.setTimeout(refreshDiagnosticsStatus, delayMs);
+}
+
+function updateDiagnosticsControls() {
+  const running = state.diagnosticsJob && state.diagnosticsJob.status === "running";
+  els.diagnosticsRunButton.disabled = running;
+  els.diagnosticsReportButton.disabled = !state.diagnosticsJob || !state.diagnosticsJob.downloads || running;
+  els.diagnosticsSysdumpButton.disabled = !state.diagnosticsJob || !state.diagnosticsJob.downloads || running;
+}
+
+function downloadDiagnosticsArtifact(kind) {
+  const downloads = state.diagnosticsJob && state.diagnosticsJob.downloads ? state.diagnosticsJob.downloads : {};
+  const url = downloads[kind];
+  if (!url) return;
+  trackUiActivity("diagnostics_download", { artifact: kind, run_id: state.diagnosticsJob.run_id || "" });
+  window.location.href = url;
+}
+
+function setDiagnosticsStatus(message) {
+  els.diagnosticsStatusText.textContent = message;
 }
 
 function renderTrainingStatus(result) {
@@ -1705,6 +1916,122 @@ function setStatus(text) {
 
 function setLiveStatus(text) {
   els.liveStatus.textContent = text;
+}
+
+async function startDefaultDebugSession() {
+  try {
+    const result = await postJson("/api/debug-session/start", { source: "ui" });
+    state.debugSessionId = result.session_id || "";
+    state.debugTrackingReady = Boolean(result.active && state.debugSessionId);
+    renderDebugSessionState();
+    if (state.debugTrackingReady) {
+      trackUiActivity("ui_loaded", {
+        mode: state.mode,
+        user_agent: navigator.userAgent,
+        viewport: `${window.innerWidth}x${window.innerHeight}`,
+      });
+    }
+  } catch (_error) {
+    state.debugTrackingReady = false;
+    renderDebugSessionState();
+  }
+}
+
+function bindDebugActivityTracking() {
+  const clickIds = [
+    "scanButton",
+    "refreshStatsButton",
+    "removeSelectedMediaButton",
+    "captureButton",
+    "saveButton",
+    "negativeButton",
+    "liveScanLocalButton",
+    "liveStartButton",
+    "liveStopButton",
+    "liveRefreshEventsButton",
+    "liveRemoveEventsButton",
+    "trainingStartButton",
+    "trainingStopButton",
+    "diagnosticsRunButton",
+    "diagnosticsRefreshButton",
+    "diagnosticsReportButton",
+    "diagnosticsSysdumpButton",
+  ];
+  clickIds.forEach((id) => {
+    const element = document.getElementById(id);
+    if (element) element.addEventListener("click", () => trackUiActivity("ui_click", { control: id }));
+  });
+
+  const changeIds = [
+    "liveCameraSelect",
+    "liveCameraProfileSelect",
+    "liveSourceInput",
+    "liveConfInput",
+    "livePresetSelect",
+    "livePreviewFpsInput",
+    "liveDetectionFpsInput",
+    "liveFrameSkipInput",
+    "liveImageSizeInput",
+    "livePreviewSizeSelect",
+    "liveJpegQualityInput",
+    "liveDeviceSelect",
+    "liveRecordInput",
+    "liveRecordLabelsInput",
+    "folderInput",
+    "projectInput",
+    "splitSelect",
+    "kindFilter",
+    "trainingScopeSelect",
+    "trainingFromDateInput",
+    "trainingToDateInput",
+    "trainingPrepareOnlyInput",
+    "trainingEpochsInput",
+    "trainingImageSizeInput",
+    "trainingBatchInput",
+    "trainingDeviceSelect",
+    "diagnosticsCameraInput",
+    "diagnosticsProfileSelect",
+    "diagnosticsSecondsInput",
+    "diagnosticsIncludeCameraInput",
+    "diagnosticsIncludePerformanceInput",
+    "diagnosticsPrivacySelect",
+  ];
+  changeIds.forEach((id) => {
+    const element = document.getElementById(id);
+    if (element) {
+      element.addEventListener("change", () => trackUiActivity("ui_control_changed", controlActivityDetails(element)));
+    }
+  });
+}
+
+function controlActivityDetails(element) {
+  const details = { control: element.id };
+  if (element.type === "checkbox") {
+    details.checked = element.checked;
+  } else if (element.tagName === "SELECT" && element.multiple) {
+    details.selected_count = element.selectedOptions.length;
+    details.values = [...element.selectedOptions].map((option) => option.value).slice(0, 12);
+  } else if (element.tagName === "SELECT" || element.type === "number") {
+    details.value = element.value;
+  } else {
+    details.changed = true;
+  }
+  return details;
+}
+
+function trackUiActivity(eventType, details = {}) {
+  if (!state.debugTrackingReady || !state.debugSessionId) return;
+  postJson("/api/debug-session/event", {
+    session_id: state.debugSessionId,
+    event_type: eventType,
+    details,
+  }).catch(() => {});
+}
+
+function renderDebugSessionState() {
+  if (!els.debugSessionStateValue || !els.debugSessionIdValue) return;
+  els.debugSessionStateValue.textContent = state.debugTrackingReady ? "Active" : "Unavailable";
+  els.debugSessionIdValue.textContent = state.debugSessionId || "No debug session";
 }
 
 function showNotification(message, type = "info", timeout = 3500) {
