@@ -23,6 +23,8 @@ const state = {
   liveRunning: false,
   liveRecording: false,
   liveStreamJobs: [],
+  liveRecordingChecks: new Map(),
+  liveRecordingPollTimer: null,
   liveModelPath: "",
   trainingJob: null,
 };
@@ -415,11 +417,17 @@ function startLiveDetection() {
     setLiveStatus("Choose a source first");
     return;
   }
+  const recordingRequested = els.liveRecordInput.checked;
+  if (recordingRequested) {
+    jobs.forEach((job) => {
+      job.clientRunId = makeClientRunId();
+    });
+  }
   hideLiveMediaPreview();
   renderLiveStreamGrid(jobs);
   els.livePlaceholder.style.display = "none";
   state.liveRunning = true;
-  state.liveRecording = els.liveRecordInput.checked;
+  state.liveRecording = recordingRequested;
   state.liveStreamJobs = jobs;
   els.liveStartButton.disabled = true;
   els.liveRecordInput.disabled = true;
@@ -427,11 +435,10 @@ function startLiveDetection() {
   els.liveTitle.textContent = liveSourceLabel();
   setLiveStatus(state.liveRecording ? "Starting stream and recording..." : "Starting stream...");
   if (state.liveRecording) {
-    showNotification(
-      els.liveRecordLabelsInput.checked ? "Labeled demo recording started" : "Raw recording started",
-      "info",
-      2500,
-    );
+    showNotification("Recording requested. Waiting for backend confirmation...", "info", 5000);
+    startRecordingStatusWatch(jobs);
+  } else {
+    stopRecordingStatusWatch();
   }
   window.setTimeout(refreshLiveEvents, 500);
 }
@@ -442,6 +449,7 @@ function stopLiveDetection(options = {}) {
   state.liveRunning = false;
   state.liveRecording = false;
   state.liveStreamJobs = [];
+  stopRecordingStatusWatch();
   els.liveStream.removeAttribute("src");
   els.liveStream.style.display = "none";
   clearLiveStreamGrid();
@@ -518,6 +526,9 @@ function liveStreamUrl(job) {
   Object.entries(job.params || {}).forEach(([key, value]) => {
     params.set(key, value);
   });
+  if (job.clientRunId) {
+    params.set("client_run_id", job.clientRunId);
+  }
   params.set("model", state.liveModelPath || "data_store/models/trained/yolov8n_drone_best.pt");
   params.set("conf", els.liveConfInput.value || "0.3");
   params.set("preview_fps", els.livePreviewFpsInput.value || "4");
@@ -555,6 +566,7 @@ function renderLiveStreamGrid(jobs) {
     const tile = document.createElement("section");
     tile.className = "liveStreamTile";
     tile.dataset.streamKey = job.key;
+    if (job.clientRunId) tile.dataset.clientRunId = job.clientRunId;
 
     const header = document.createElement("div");
     header.className = "liveStreamTileHeader";
@@ -568,7 +580,7 @@ function renderLiveStreamGrid(jobs) {
     image.className = "liveStreamImage";
     image.alt = "";
     image.addEventListener("load", () => {
-      stateText.textContent = "Streaming";
+      stateText.textContent = job.clientRunId ? "Streaming · confirming recording" : "Streaming";
       if (state.liveRunning) setLiveStatus(`${job.label || "Source"} streaming`);
     });
     image.addEventListener("error", () => {
@@ -600,6 +612,116 @@ function liveRecordSuffix(job) {
   }
   const basename = source.split(/[\\/]/).filter(Boolean).pop() || job.label || "source";
   return `source_${basename}`;
+}
+
+function makeClientRunId() {
+  const random = Math.random().toString(36).slice(2, 10);
+  return `live_${Date.now()}_${random}`;
+}
+
+function startRecordingStatusWatch(jobs) {
+  stopRecordingStatusWatch();
+  const checks = jobs
+    .filter((job) => job.clientRunId)
+    .map((job) => [
+      job.clientRunId,
+      {
+        label: job.label || "Live source",
+        startedAt: Date.now(),
+        status: "pending",
+      },
+    ]);
+  state.liveRecordingChecks = new Map(checks);
+  scheduleRecordingStatusPoll(400);
+}
+
+function stopRecordingStatusWatch() {
+  if (state.liveRecordingPollTimer) {
+    window.clearTimeout(state.liveRecordingPollTimer);
+    state.liveRecordingPollTimer = null;
+  }
+  state.liveRecordingChecks.clear();
+}
+
+function scheduleRecordingStatusPoll(delayMs = 800) {
+  if (!state.liveRunning || !state.liveRecording || !state.liveRecordingChecks.size) return;
+  if (state.liveRecordingPollTimer) window.clearTimeout(state.liveRecordingPollTimer);
+  state.liveRecordingPollTimer = window.setTimeout(pollRecordingStatus, delayMs);
+}
+
+async function pollRecordingStatus() {
+  state.liveRecordingPollTimer = null;
+  if (!state.liveRunning || !state.liveRecording || !state.liveRecordingChecks.size) return;
+  try {
+    const result = await getJson("/api/live/events?limit=200");
+    const events = Array.isArray(result.events) ? result.events.slice().reverse() : [];
+    for (const event of events) {
+      const runId = String(event.client_run_id || "");
+      const check = state.liveRecordingChecks.get(runId);
+      if (!check) continue;
+      handleRecordingStatusEvent(runId, check, event);
+    }
+    expirePendingRecordingChecks();
+  } catch (_error) {
+    setLiveStatus("Recording status check failed");
+  }
+  if (state.liveRecordingChecks.size) {
+    const hasPending = [...state.liveRecordingChecks.values()].some((check) => check.status === "pending");
+    scheduleRecordingStatusPoll(hasPending ? 800 : 2500);
+  }
+}
+
+function handleRecordingStatusEvent(runId, check, event) {
+  const type = String(event.event_type || "");
+  if (type === "recording_started" && check.status === "pending") {
+    check.status = "confirmed";
+    updateRecordingTileStatus(runId, "Streaming · recording");
+    const path = shortSource(event.recording_path || event.recording_dir || "");
+    const mode = event.labels ? "Labeled recording" : "Raw recording";
+    showNotification(`${mode} in progress${path ? `: ${path}` : ""}`, "success", 6000);
+    setLiveStatus(`${check.label} recording in progress`);
+    return;
+  }
+  if (type === "recording_failed" || type === "recording_skipped" || isRecordingErrorEvent(event)) {
+    check.status = "failed";
+    updateRecordingTileStatus(runId, "Streaming · recording failed");
+    showNotification(`${check.label}: ${event.message || event.reason || "recording failed"}`, "error", 8000);
+    setLiveStatus(`${check.label} recording failed`);
+    state.liveRecordingChecks.delete(runId);
+    return;
+  }
+  if (type === "stop" && check.status === "pending") {
+    check.status = "failed";
+    updateRecordingTileStatus(runId, "Stopped · recording not confirmed");
+    showNotification(`${check.label}: stream stopped before recording was confirmed`, "error", 8000);
+    state.liveRecordingChecks.delete(runId);
+  }
+}
+
+function expirePendingRecordingChecks() {
+  const now = Date.now();
+  for (const [runId, check] of state.liveRecordingChecks.entries()) {
+    if (check.status !== "pending") continue;
+    if (now - check.startedAt < 12000) continue;
+    check.status = "timeout";
+    updateRecordingTileStatus(runId, "Streaming · recording unconfirmed");
+    showNotification(`${check.label}: recording confirmation not received`, "error", 8000);
+    setLiveStatus(`${check.label} recording confirmation not received`);
+    state.liveRecordingChecks.delete(runId);
+  }
+}
+
+function isRecordingErrorEvent(event) {
+  if (String(event.event_type || "") !== "error") return false;
+  return /record/i.test(String(event.message || event.reason || ""));
+}
+
+function updateRecordingTileStatus(runId, text) {
+  const tile = [...els.liveStreamGrid.querySelectorAll(".liveStreamTile")].find(
+    (candidate) => candidate.dataset.clientRunId === runId,
+  );
+  const stateText = tile ? tile.querySelector(".liveStreamTileHeader span") : null;
+  if (stateText) stateText.textContent = text;
 }
 
 function applyLivePreset() {
@@ -1427,6 +1549,7 @@ function eventTitle(type) {
   if (type === "recording_started") return "Recording started";
   if (type === "recording_saved") return "Recording saved";
   if (type === "recording_skipped") return "Recording skipped";
+  if (type === "recording_failed") return "Recording failed";
   if (type === "detector_ready") return "Detector ready";
   if (type === "source_reconnect") return "Source reconnect";
   if (type === "source_reconnected") return "Source reconnected";
@@ -1435,7 +1558,7 @@ function eventTitle(type) {
 
 function eventClass(type) {
   if (type === "drone_detected" || type === "drone_in_frame") return "alert";
-  if (type === "error") return "error";
+  if (type === "error" || type === "recording_failed") return "error";
   return "";
 }
 
@@ -1462,6 +1585,9 @@ function eventDetailText(type, event, best) {
   }
   if (type === "recording_saved") {
     return `${event.labels ? "labeled demo" : "raw"} · ${formatBytes(Number(event.size_bytes || 0))} · ${shortSource(event.recording_path || "")}`;
+  }
+  if (type === "recording_failed") {
+    return String(event.message || event.reason || "recording failed");
   }
   return String(event.message || event.reason || "");
 }

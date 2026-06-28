@@ -581,6 +581,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         record_enabled = parse_bool(query_value(query, "record", "0"))
         record_labels = parse_bool(query_value(query, "record_labels", "0"))
         record_name_suffix = query_value(query, "record_name_suffix", "").strip()
+        client_run_id = safe_name(query_value(query, "client_run_id", "").strip())[:80]
         record_dir = resolve_user_path(query_value(query, "record_dir", str(self.server.default_folder)))
         record_max_bytes = min(
             RECORDING_MAX_BYTES,
@@ -675,6 +676,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 "recording_max_mb": round(record_max_bytes / 1024 / 1024, 1),
                 "camera_profile": camera_profile if camera_id else "",
             },
+            client_run_id=client_run_id,
         )
         event_logger.log_start()
         presence_state = DronePresenceState(out_seconds=presence_out_seconds)
@@ -692,6 +694,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         threading.Thread(target=load_detector_for_stream, daemon=True).start()
         last_detection_event_at = 0.0
         recorder: StreamRecorder | None = None
+        recording_confirmed = False
         if record_enabled:
             if source.is_image:
                 event_logger.log_recording_skipped("image source does not need stream recording")
@@ -702,16 +705,15 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                         suffix_parts.append(safe_name(record_name_suffix))
                     if record_labels:
                         suffix_parts.append("labeled")
-                        recorder = StreamRecorder(
-                            record_dir,
-                            preview_fps,
-                            record_max_bytes,
-                            record_rollover_bytes,
-                            name_suffix=f"_{'_'.join(suffix_parts)}" if suffix_parts else "",
+                    recorder = StreamRecorder(
+                        record_dir,
+                        preview_fps,
+                        record_max_bytes,
+                        record_rollover_bytes,
+                        name_suffix=f"_{'_'.join(suffix_parts)}" if suffix_parts else "",
                     )
-                    event_logger.log_recording_started(record_dir, record_max_bytes, record_labels)
-                except OSError as exc:
-                    event_logger.log_error(f"recording disabled: {exc}")
+                except Exception as exc:
+                    event_logger.log_recording_failed(f"recording disabled: {exc}")
         capture_worker = None
         latest_frame_token = 0
         use_capture_worker = source.kind in {"camera", "rtsp", "stream"}
@@ -775,8 +777,16 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 if recorder is not None:
                     try:
                         recorder.write(annotated if record_labels else frame)
+                        if not recording_confirmed:
+                            recording_confirmed = True
+                            event_logger.log_recording_started(
+                                record_dir,
+                                record_max_bytes,
+                                record_labels,
+                                recorder.current_path,
+                            )
                     except Exception as exc:
-                        event_logger.log_error(f"recording disabled: {exc}")
+                        event_logger.log_recording_failed(f"recording disabled: {exc}")
                         recorder.close()
                         recorder = None
 
@@ -787,7 +797,9 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 event_tracks = alert.tracks if alert.active and alert.tracks else tracks
                 event_now = time.monotonic()
                 if detection_ran:
-                    transition = presence_state.update(tracks, frame_index, event_now)
+                    # Presence episodes should follow persisted alerts, not one-frame raw detections.
+                    presence_tracks = alert.tracks if alert.active else []
+                    transition = presence_state.update(presence_tracks, frame_index, event_now)
                     if transition is not None:
                         event_logger.log_presence_transition(transition)
                 if detection_ran and event_tracks and event_logger.should_log_detection(last_detection_event_at, event_now):
@@ -2033,6 +2045,7 @@ class LiveEventLogger:
         source_id: str,
         model_path: Path,
         settings: dict[str, object],
+        client_run_id: str = "",
     ) -> None:
         now = datetime.now().astimezone()
         self.root_dir = root_dir
@@ -2045,6 +2058,7 @@ class LiveEventLogger:
         self.source_id = source_id
         self.model_path = model_path
         self.settings = settings
+        self.client_run_id = client_run_id
         self.started_at = time.monotonic()
         self.detection_cooldown_seconds = 5.0
         self.detection_count = 0
@@ -2082,16 +2096,26 @@ class LiveEventLogger:
             }
         )
 
-    def log_recording_started(self, output_dir: Path, max_bytes: int, labels: bool = False) -> None:
-        self._append(
-            {
-                "event_type": "recording_started",
-                "message": f"recording to {portable_path(output_dir)}",
-                "recording_dir": portable_path(output_dir),
-                "max_size_mb": round(max_bytes / 1024 / 1024, 1),
-                "labels": labels,
-            }
-        )
+    def log_recording_started(
+        self,
+        output_dir: Path,
+        max_bytes: int,
+        labels: bool = False,
+        path: Path | None = None,
+    ) -> None:
+        payload: dict[str, object] = {
+            "event_type": "recording_started",
+            "message": f"recording to {portable_path(output_dir)}",
+            "recording_dir": portable_path(output_dir),
+            "max_size_mb": round(max_bytes / 1024 / 1024, 1),
+            "labels": labels,
+        }
+        if path is not None:
+            payload["recording_path"] = portable_path(path)
+        self._append(payload)
+
+    def log_recording_failed(self, reason: str) -> None:
+        self._append({"event_type": "recording_failed", "message": reason, "reason": reason})
 
     def log_recording_saved(self, path: Path, size_bytes: int, labels: bool = False) -> None:
         self._append(
@@ -2187,6 +2211,8 @@ class LiveEventLogger:
             "source_id": self.source_id,
             **payload,
         }
+        if self.client_run_id:
+            row["client_run_id"] = self.client_run_id
         try:
             self.event_path.parent.mkdir(parents=True, exist_ok=True)
             with self.lock:
