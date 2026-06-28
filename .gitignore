@@ -38,3 +38,4 @@ models/**
 *.avi
 *.mkv
 *.webm
+!tests/fixtures/media/*.mp4

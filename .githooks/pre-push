@@ -1,0 +1,8 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ -x ".venv/bin/python" ]; then
+  .venv/bin/python scripts/run_regression.py --code
+else
+  python3 scripts/run_regression.py --code
+fi

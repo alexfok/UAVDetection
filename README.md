@@ -225,6 +225,24 @@ pip install -r requirements.txt
 
 Model weights are stored in `data_store/models/`. The default live model is expected at `data_store/models/trained/yolov8n_drone_best.pt`. The base COCO model is expected at `data_store/models/base/yolov8n.pt`; if it is missing, Ultralytics can download `yolov8n.pt` when you explicitly pass that model name.
 
+## Regression Checks
+
+Run deterministic code tests before pushing changes:
+
+```bash
+.venv/bin/python scripts/run_regression.py --code
+```
+
+The code suite compiles Python files, parses the annotator HTML, runs JavaScript syntax checks when `node` is available, and executes the standard-library `unittest` regression tests under `tests/`. The suite uses tiny fixtures under `tests/fixtures/` and temporary directories; it must not depend on real `data_store/` media, model weights, or camera hardware.
+
+GitHub Actions runs the same code checks on every push and pull request, with Node.js required in CI. To run the local gate automatically before `git push`:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Setup/environment tests are intentionally separate from code tests. They should live behind a diagnostics/sysdump command and UI flow so hardware, camera, logs, and performance probes do not make normal code pushes flaky.
+
 ## Live Detection Examples
 
 Embedded or default USB camera:

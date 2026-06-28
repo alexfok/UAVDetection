@@ -9,12 +9,6 @@ from pathlib import Path
 
 import yaml
 
-from app.torchvision_compat import install_torchvision_nms_fallback
-
-install_torchvision_nms_fallback()
-
-from ultralytics import YOLO
-
 
 IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -117,7 +111,7 @@ def main() -> int:
     if args.device:
         train_args["device"] = args.device
 
-    model = YOLO(args.model)
+    model = load_yolo_model(args.model)
     results = model.train(**train_args)
     ended_at = datetime.now().astimezone()
     save_dir = Path(results.save_dir)
@@ -130,6 +124,15 @@ def main() -> int:
     write_training_metadata(args, started_at, ended_at, data_path, save_dir, best_model, output_model, dataset_metadata)
     print(f"Copied best model to {output_model}")
     return 0
+
+
+def load_yolo_model(model_path: str):
+    from app.torchvision_compat import install_torchvision_nms_fallback
+
+    install_torchvision_nms_fallback()
+    from ultralytics import YOLO
+
+    return YOLO(model_path)
 
 
 def build_filtered_dataset(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:

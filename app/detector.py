@@ -5,12 +5,6 @@ from typing import Iterable
 
 import numpy as np
 
-from app.torchvision_compat import install_torchvision_nms_fallback
-
-install_torchvision_nms_fallback()
-
-from ultralytics import YOLO
-
 from app.config import DetectorConfig
 from app.labels import display_label, normalise_label_aliases, resolve_target_class_ids
 from app.types import Detection
@@ -22,7 +16,7 @@ class DroneDetector:
     def __init__(self, config: DetectorConfig) -> None:
         self.config = config
         LOGGER.info("Loading YOLO model: %s", config.model_path)
-        self.model = YOLO(config.model_path)
+        self.model = load_yolo_model(config.model_path)
         self.names = self._normalise_names(self.model.names)
         self.label_aliases = normalise_label_aliases(config.label_aliases)
         self.target_class_ids = self._resolve_target_classes(config.target_classes)
@@ -106,3 +100,12 @@ class DroneDetector:
             ),
         )
         return ids
+
+
+def load_yolo_model(model_path: str):
+    from app.torchvision_compat import install_torchvision_nms_fallback
+
+    install_torchvision_nms_fallback()
+    from ultralytics import YOLO
+
+    return YOLO(model_path)
