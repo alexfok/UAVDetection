@@ -168,6 +168,70 @@ Useful installer options:
 
 Important: Python wheels are platform-specific. A bundle prepared with the default wheelhouse on macOS is suitable for a compatible macOS target, but not for Windows or Jetson/Linux ARM. For the Windows laptop, use `--wheel-platform windows-x64 --wheel-python-version 311` and install Python 3.11 on the target first. For Jetson, prepare the bundle on Jetson or another compatible Linux ARM environment, or provide a matching wheelhouse manually.
 
+## Jetson Deployment
+
+Jetson deployment uses a target-side deployment manager so install, upgrade, and uninstall all begin with the same prerequisites check. The preflight checks platform/Python, required source files, install directory state, data-store/model presence, venv choice, systemd/sudo availability, and port/service assumptions before changing files.
+
+Stage current code from the Mac to the Jetson:
+
+```bash
+rsync -az --delete \
+  --exclude .git \
+  --exclude .venv \
+  --exclude .venv_cuda \
+  --exclude data_store \
+  --exclude annotations \
+  --exclude certs \
+  --exclude models \
+  --exclude reports \
+  --exclude runs \
+  --exclude videos \
+  --exclude 'yolo*.pt' \
+  ./ ubuntu@192.168.100.197:~/UAVDetection_deploy_stage/
+```
+
+Run the prerequisites check first:
+
+```bash
+ssh ubuntu@192.168.100.197
+cd ~/UAVDetection_deploy_stage
+python3 scripts/deploy_jetson.py preflight --install-dir ~/UAVDetection
+```
+
+Upgrade an existing Jetson install while preserving `data_store/`, camera config, credentials, certificates, models, datasets, recordings, and logs:
+
+```bash
+python3 scripts/deploy_jetson.py upgrade --install-dir ~/UAVDetection --skip-deps
+```
+
+Clean install to an empty target:
+
+```bash
+python3 scripts/deploy_jetson.py install --install-dir ~/UAVDetection --skip-deps
+```
+
+If the install directory already exists, uninstall first or pass `--replace-existing` deliberately. Uninstall requires confirmation and preserves `data_store/` by default by moving it beside the install directory:
+
+```bash
+python3 scripts/deploy_jetson.py uninstall --install-dir ~/UAVDetection --yes
+```
+
+Only use `--delete-data` when raw media, annotations, models, camera configuration, credentials, logs, and recordings can be discarded:
+
+```bash
+python3 scripts/deploy_jetson.py uninstall --install-dir ~/UAVDetection --yes --delete-data
+```
+
+For non-destructive process testing on Jetson, use a temporary target and disable service changes:
+
+```bash
+python3 scripts/deploy_jetson.py install --install-dir ~/UAVDetection_deploy_test --service-mode none --skip-deps
+python3 scripts/deploy_jetson.py upgrade --install-dir ~/UAVDetection_deploy_test --service-mode none --skip-deps
+python3 scripts/deploy_jetson.py uninstall --install-dir ~/UAVDetection_deploy_test --service-mode none --yes
+```
+
+The live Jetson service is normally `uav-detection.service` under systemd. Service install/restart may require an interactive sudo password; the preflight reports this before the upgrade reaches the restart step.
+
 ## Data Store
 
 Project data lives under the canonical local data store:
