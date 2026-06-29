@@ -11,7 +11,9 @@ from scripts.deploy_jetson import (
     collect_preflight_checks,
     copy_source_tree,
     render_service_file,
+    render_launchd_plist,
     uninstall_files,
+    write_windows_start_script,
 )
 
 
@@ -107,6 +109,67 @@ class JetsonDeploymentTests(unittest.TestCase):
             self.assertIn("EnvironmentFile=", content)
             self.assertIn("annotation_server.env", content)
             self.assertIn("--password-env ANNOTATION_SERVER_PASSWORD", content)
+
+    def test_launchd_plist_loads_env_file_before_server_start(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "UAVDetection"
+            context = DeployContext(
+                action="upgrade",
+                source_dir=Path(tmp),
+                install_dir=install,
+                service_name="com.uavdetection.annotation-server",
+                service_mode="launchd",
+                venv=".venv",
+                port=8765,
+                skip_deps=True,
+                no_service=False,
+            )
+            args = server_args()
+
+            plist = render_launchd_plist(args, context)
+
+            command = " ".join(plist["ProgramArguments"])
+            self.assertEqual(plist["Label"], "com.uavdetection.annotation-server")
+            self.assertIn("annotation_server.env", command)
+            self.assertIn("scripts/annotation_server.py", command)
+
+    def test_windows_start_script_loads_env_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "UAVDetection"
+            context = DeployContext(
+                action="upgrade",
+                source_dir=Path(tmp),
+                install_dir=install,
+                service_name="UAVDetection Annotation Server",
+                service_mode="windows-task",
+                venv=".venv",
+                port=8765,
+                skip_deps=True,
+                no_service=False,
+            )
+
+            script = write_windows_start_script(server_args(), context, dry_run=False)
+
+            text = script.read_text(encoding="utf-8")
+            self.assertIn("annotation_server.env", text)
+            self.assertIn("--password-env", text)
+            self.assertIn("%ANNOTATION_SERVER_USERNAME%", text)
+            self.assertIn("scripts/annotation_server.py", text)
+
+
+def server_args() -> object:
+    return type(
+        "Args",
+        (),
+        {
+            "host": "0.0.0.0",
+            "default_folder": "data_store/raw_data/Roni",
+            "project_dir": "data_store/datasets/web_drone_v1",
+            "camera_config": "data_store/system_config/cameras.yaml",
+            "live_model": "data_store/models/trained/yolov8n_drone_best.pt",
+            "no_https": False,
+        },
+    )()
 
 
 if __name__ == "__main__":

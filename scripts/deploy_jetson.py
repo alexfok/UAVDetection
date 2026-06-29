@@ -4,6 +4,8 @@ import argparse
 import json
 import os
 import platform
+import plistlib
+import shlex
 import shutil
 import socket
 import subprocess
@@ -16,10 +18,14 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INSTALL_DIR = Path.home() / "UAVDetection"
 DEFAULT_SERVICE_NAME = "uav-detection.service"
-DEFAULT_VENV = ".venv_cuda"
+DEFAULT_VENV = ""
+JETSON_VENV = ".venv_cuda"
 DEFAULT_FALLBACK_VENV = ".venv"
 DEFAULT_PORT = 8765
+LAUNCHD_LABEL = "com.uavdetection.annotation-server"
+WINDOWS_TASK_NAME = "UAVDetection Annotation Server"
 SERVICE_FILE_ROOT = Path("/etc/systemd/system")
+SHELL_USERNAME_ARG = '"${ANNOTATION_SERVER_USERNAME:-admin}"'
 REQUIRED_SOURCE_PATHS = (
     "app",
     "configs",
@@ -82,14 +88,15 @@ class DeployContext:
     skip_deps: bool
     no_service: bool
     allow_existing: bool = False
+    target: str = "auto"
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Manage Jetson UAVDetection install, upgrade, and uninstall.")
+    parser = argparse.ArgumentParser(description="Manage UAVDetection install, upgrade, and uninstall.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     for name in ("preflight", "install", "upgrade", "uninstall", "status"):
-        add_common_args(subparsers.add_parser(name, help=f"{name} Jetson deployment"))
+        add_common_args(subparsers.add_parser(name, help=f"{name} deployment"))
 
     install = subparsers.choices["install"]
     install.add_argument("--replace-existing", action="store_true", help="Move an existing install aside before clean install.")
@@ -117,10 +124,11 @@ def parse_args() -> argparse.Namespace:
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source-dir", type=Path, default=PROJECT_ROOT, help="Project source tree to deploy from.")
-    parser.add_argument("--install-dir", type=Path, default=DEFAULT_INSTALL_DIR, help="Target install directory on Jetson.")
-    parser.add_argument("--service-name", default=DEFAULT_SERVICE_NAME, help="systemd service name.")
-    parser.add_argument("--service-mode", choices=("system", "user", "none"), default="system")
-    parser.add_argument("--venv", default=DEFAULT_VENV, help="Preferred virtualenv under install dir.")
+    parser.add_argument("--install-dir", type=Path, default=DEFAULT_INSTALL_DIR, help="Target install directory.")
+    parser.add_argument("--target", choices=("auto", "jetson", "linux", "macos", "windows"), default="auto")
+    parser.add_argument("--service-name", default="", help="Service/task name. Defaults depend on the target platform.")
+    parser.add_argument("--service-mode", choices=("auto", "system", "user", "launchd", "windows-task", "none"), default="auto")
+    parser.add_argument("--venv", default=DEFAULT_VENV, help="Preferred virtualenv under install dir. Defaults to .venv, or .venv_cuda on Jetson.")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--skip-deps", action="store_true", help="Do not create/update virtualenv dependencies.")
     parser.add_argument("--skip-preflight", action="store_true", help="Skip the prerequisite check.")
@@ -154,19 +162,62 @@ def main() -> int:
 
 
 def context_from_args(args: argparse.Namespace) -> DeployContext:
-    no_service = args.service_mode == "none"
+    target = resolve_target(args.target)
+    service_mode = resolve_service_mode(args.service_mode, target)
+    no_service = service_mode == "none"
+    service_name = args.service_name or default_service_name(service_mode)
+    venv = args.venv or default_venv(target)
     return DeployContext(
         action=args.command,
         source_dir=args.source_dir.expanduser().resolve(),
         install_dir=args.install_dir.expanduser().resolve(),
-        service_name=args.service_name,
-        service_mode=args.service_mode,
-        venv=args.venv,
+        service_name=service_name,
+        service_mode=service_mode,
+        venv=venv,
         port=args.port,
         skip_deps=args.skip_deps,
         no_service=no_service,
         allow_existing=bool(getattr(args, "replace_existing", False)),
+        target=target,
     )
+
+
+def resolve_target(target: str) -> str:
+    if target != "auto":
+        return target
+    system = platform.system()
+    if system == "Darwin":
+        return "macos"
+    if system == "Windows":
+        return "windows"
+    if system == "Linux":
+        machine = platform.machine().lower()
+        return "jetson" if machine in {"aarch64", "arm64"} else "linux"
+    return "linux"
+
+
+def resolve_service_mode(service_mode: str, target: str) -> str:
+    if service_mode != "auto":
+        return service_mode
+    if target == "macos":
+        return "launchd"
+    if target == "windows":
+        return "windows-task"
+    if target == "jetson":
+        return "system"
+    return "user"
+
+
+def default_venv(target: str) -> str:
+    return JETSON_VENV if target == "jetson" else DEFAULT_FALLBACK_VENV
+
+
+def default_service_name(service_mode: str) -> str:
+    if service_mode == "launchd":
+        return LAUNCHD_LABEL
+    if service_mode == "windows-task":
+        return WINDOWS_TASK_NAME
+    return DEFAULT_SERVICE_NAME
 
 
 def run_preflight_command(context: DeployContext, json_output: bool) -> int:
@@ -200,6 +251,7 @@ def run_status_command(context: DeployContext, json_output: bool) -> int:
 def collect_preflight_checks(context: DeployContext) -> list[Check]:
     checks: list[Check] = []
     add_platform_checks(checks)
+    add_target_check(checks, context)
     add_source_checks(checks, context)
     add_install_checks(checks, context)
     add_runtime_checks(checks, context)
@@ -211,16 +263,29 @@ def collect_preflight_checks(context: DeployContext) -> list[Check]:
 def add_platform_checks(checks: list[Check]) -> None:
     system = platform.system()
     machine = platform.machine()
-    checks.append(Check("platform", "pass" if system == "Linux" else "fail", f"{system} {machine}"))
+    supported = system in {"Linux", "Darwin", "Windows"}
+    checks.append(Check("platform", "pass" if supported else "fail", f"{system} {machine}"))
     version = sys.version_info
     checks.append(
         Check(
             "python_version",
-            "pass" if version >= (3, 10) else "fail",
+            "pass" if version >= (3, 9) else "fail",
             f"{version.major}.{version.minor}.{version.micro} at {sys.executable}",
         )
     )
     checks.append(Check("python_venv_module", "pass" if python_has_venv() else "fail", "python3 -m venv available"))
+
+
+def add_target_check(checks: list[Check], context: DeployContext) -> None:
+    system = platform.system()
+    machine = platform.machine().lower()
+    expected = {
+        "macos": system == "Darwin",
+        "windows": system == "Windows",
+        "linux": system == "Linux",
+        "jetson": system == "Linux" and machine in {"aarch64", "arm64"},
+    }.get(context.target, True)
+    checks.append(Check("target", "pass" if expected else "fail", f"{context.target} on {system} {machine}"))
 
 
 def add_source_checks(checks: list[Check], context: DeployContext) -> None:
@@ -260,8 +325,8 @@ def add_runtime_checks(checks: list[Check], context: DeployContext) -> None:
     preferred = preferred_python(context.install_dir, context.venv)
     if preferred.exists():
         checks.append(Check("venv_python", "pass", str(preferred)))
-    elif (context.install_dir / DEFAULT_FALLBACK_VENV / "bin/python").exists():
-        checks.append(Check("venv_python", "warn", f"preferred missing; fallback exists: {context.install_dir / DEFAULT_FALLBACK_VENV / 'bin/python'}"))
+    elif (fallback := context.install_dir / DEFAULT_FALLBACK_VENV / bin_dir() / python_executable_name()).exists():
+        checks.append(Check("venv_python", "warn", f"preferred missing; fallback exists: {fallback}"))
     elif context.no_service:
         checks.append(Check("venv_python", "warn", f"{preferred} missing; service disabled, smoke checks can use {sys.executable}"))
     elif context.skip_deps:
@@ -274,8 +339,16 @@ def add_service_checks(checks: list[Check], context: DeployContext) -> None:
     if context.no_service:
         checks.append(Check("service_mode", "skip", "service operations disabled"))
         return
-    systemctl = shutil.which("systemctl")
-    checks.append(Check("systemctl", "pass" if systemctl else "fail", systemctl or "systemctl not found"))
+    checks.append(Check("service_mode", "pass", context.service_mode))
+    if context.service_mode in {"system", "user"}:
+        systemctl = shutil.which("systemctl")
+        checks.append(Check("systemctl", "pass" if systemctl else "fail", systemctl or "systemctl not found"))
+    elif context.service_mode == "launchd":
+        launchctl = shutil.which("launchctl")
+        checks.append(Check("launchctl", "pass" if launchctl else "fail", launchctl or "launchctl not found"))
+    elif context.service_mode == "windows-task":
+        schtasks = shutil.which("schtasks")
+        checks.append(Check("schtasks", "pass" if schtasks else "fail", schtasks or "schtasks not found"))
     if context.service_mode == "system":
         sudo = shutil.which("sudo")
         checks.append(Check("sudo", "pass" if sudo else "fail", sudo or "sudo not found"))
@@ -477,7 +550,7 @@ def ensure_certificate(install_dir: Path) -> None:
 
 def ensure_dependencies(install_dir: Path, venv_name: str, allow_online: bool) -> None:
     venv_dir = install_dir / venv_name
-    venv_python = venv_dir / "bin/python"
+    venv_python = venv_dir / bin_dir() / python_executable_name()
     if not venv_python.exists():
         run([sys.executable, "-m", "venv", str(venv_dir)], check=True, cwd=install_dir)
     command = [str(venv_python), "-m", "pip", "install"]
@@ -494,11 +567,17 @@ def ensure_dependencies(install_dir: Path, venv_name: str, allow_online: bool) -
 def maybe_install_service(args: argparse.Namespace, context: DeployContext) -> None:
     if context.no_service:
         return
+    if context.service_mode == "launchd":
+        install_launchd_service(args, context)
+        return
+    if context.service_mode == "windows-task":
+        install_windows_task(args, context)
+        return
+    if args.dry_run:
+        print_action(True, f"write service file {service_file_path(context)}")
+        return
     content = render_service_file(args, context)
     path = service_file_path(context)
-    if args.dry_run:
-        print_action(True, f"write service file {path}")
-        return
     tmp = Path("/tmp") / f"{context.service_name}.{os.getpid()}.tmp"
     tmp.write_text(content, encoding="utf-8")
     if context.service_mode == "system":
@@ -512,34 +591,30 @@ def maybe_install_service(args: argparse.Namespace, context: DeployContext) -> N
         run(["systemctl", "--user", "enable", context.service_name], check=False)
 
 
+def install_launchd_service(args: argparse.Namespace, context: DeployContext) -> None:
+    path = service_file_path(context)
+    if args.dry_run:
+        print_action(True, f"write launch agent {path}")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as handle:
+        plistlib.dump(render_launchd_plist(args, context), handle)
+    run(["launchctl", "bootout", f"gui/{os.getuid()}", str(path)], check=False)
+    run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(path)], check=False)
+    run(["launchctl", "enable", f"gui/{os.getuid()}/{launchd_label(context)}"], check=False)
+
+
+def install_windows_task(args: argparse.Namespace, context: DeployContext) -> None:
+    script = write_windows_start_script(args, context, dry_run=args.dry_run)
+    if args.dry_run:
+        print_action(True, f"create scheduled task {context.service_name}")
+        return
+    run(["schtasks", "/Create", "/TN", context.service_name, "/SC", "ONLOGON", "/TR", str(script), "/F"], check=False)
+
+
 def render_service_file(args: argparse.Namespace, context: DeployContext) -> str:
     install_dir = context.install_dir
-    python = preferred_python(install_dir, context.venv)
-    cert = install_dir / "data_store/system_config/certs/annotation.crt"
-    key = install_dir / "data_store/system_config/certs/annotation.key"
-    command = [
-        str(python),
-        "scripts/annotation_server.py",
-        "--host",
-        args.host,
-        "--port",
-        str(context.port),
-        "--username",
-        '"${ANNOTATION_SERVER_USERNAME:-admin}"',
-        "--password-env",
-        "ANNOTATION_SERVER_PASSWORD",
-        "--default-folder",
-        args.default_folder,
-        "--project-dir",
-        args.project_dir,
-        "--camera-config",
-        args.camera_config,
-        "--live-model",
-        args.live_model,
-    ]
-    if not args.no_https:
-        command.extend(["--certfile", str(cert.relative_to(install_dir)), "--keyfile", str(key.relative_to(install_dir))])
-    shell_command = " ".join(command)
+    shell_command = server_shell_command(args, context)
     user_lines = []
     if context.service_mode == "system":
         user_lines = [f"User={os.environ.get('USER', 'ubuntu')}", f"Group={os.environ.get('USER', 'ubuntu')}"]
@@ -569,6 +644,104 @@ def render_service_file(args: argparse.Namespace, context: DeployContext) -> str
     )
 
 
+def server_command_parts(args: argparse.Namespace, context: DeployContext) -> list[str]:
+    install_dir = context.install_dir
+    python = preferred_python(install_dir, context.venv)
+    cert = install_dir / "data_store/system_config/certs/annotation.crt"
+    key = install_dir / "data_store/system_config/certs/annotation.key"
+    username_value = "%ANNOTATION_SERVER_USERNAME%" if context.service_mode == "windows-task" else SHELL_USERNAME_ARG
+    command = [
+        str(python),
+        "scripts/annotation_server.py",
+        "--host",
+        args.host,
+        "--port",
+        str(context.port),
+        "--username",
+        username_value,
+        "--password-env",
+        "ANNOTATION_SERVER_PASSWORD",
+        "--default-folder",
+        args.default_folder,
+        "--project-dir",
+        args.project_dir,
+        "--camera-config",
+        args.camera_config,
+        "--live-model",
+        args.live_model,
+    ]
+    if not args.no_https:
+        command.extend(["--certfile", str(cert.relative_to(install_dir)), "--keyfile", str(key.relative_to(install_dir))])
+    return command
+
+
+def server_shell_command(args: argparse.Namespace, context: DeployContext) -> str:
+    return " ".join(shell_quote(part) for part in server_command_parts(args, context))
+
+
+def shell_quote(part: str) -> str:
+    if part == SHELL_USERNAME_ARG:
+        return part
+    return shlex.quote(part)
+
+
+def render_launchd_plist(args: argparse.Namespace, context: DeployContext) -> dict[str, object]:
+    logs_dir = context.install_dir / "data_store/system_config/logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    env_path = context.install_dir / "data_store/system_config/annotation_server.env"
+    command = (
+        f"set -a; [ -f {shlex.quote(str(env_path))} ] && . {shlex.quote(str(env_path))}; set +a; "
+        f"cd {shlex.quote(str(context.install_dir))}; "
+        f"exec {server_shell_command(args, context)}"
+    )
+    return {
+        "Label": launchd_label(context),
+        "ProgramArguments": ["/bin/bash", "-lc", command],
+        "WorkingDirectory": str(context.install_dir),
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "EnvironmentVariables": {
+            "PYTHONUNBUFFERED": "1",
+            "YOLO_CONFIG_DIR": str(context.install_dir / "data_store/system_config/ultralytics"),
+            "MPLCONFIGDIR": str(context.install_dir / "data_store/system_config/matplotlib"),
+        },
+        "StandardOutPath": str(logs_dir / "annotation_server.out.log"),
+        "StandardErrorPath": str(logs_dir / "annotation_server.err.log"),
+    }
+
+
+def write_windows_start_script(args: argparse.Namespace, context: DeployContext, dry_run: bool) -> Path:
+    script = service_file_path(context)
+    command = " ".join(windows_quote(part) for part in server_command_parts(args, context))
+    lines = [
+        "@echo off",
+        "setlocal EnableExtensions",
+        f'cd /d "{context.install_dir}"',
+        'set "ENV_FILE=data_store\\system_config\\annotation_server.env"',
+        'if exist "%ENV_FILE%" (',
+        '  for /f "usebackq tokens=1,* delims==" %%A in ("%ENV_FILE%") do (',
+        '    if not "%%A"=="" if not "%%A:~0,1%"=="#" set "%%A=%%B"',
+        "  )",
+        ")",
+        f'set "YOLO_CONFIG_DIR={context.install_dir / "data_store/system_config/ultralytics"}"',
+        f'set "MPLCONFIGDIR={context.install_dir / "data_store/system_config/matplotlib"}"',
+        "set PYTHONUNBUFFERED=1",
+        command,
+        "",
+    ]
+    if dry_run:
+        print_action(True, f"write Windows start script {script}")
+        return script
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("\r\n".join(lines), encoding="utf-8")
+    return script
+
+
+def windows_quote(value: str) -> str:
+    escaped = value.replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 def maybe_run_smoke(args: argparse.Namespace, context: DeployContext) -> None:
     if args.skip_smoke:
         return
@@ -587,6 +760,18 @@ def maybe_run_smoke(args: argparse.Namespace, context: DeployContext) -> None:
 
 
 def restart_service(context: DeployContext, dry_run: bool) -> None:
+    if context.service_mode == "launchd":
+        command = ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{launchd_label(context)}"]
+        print_action(dry_run, " ".join(command))
+        if not dry_run:
+            run(command, check=False)
+        return
+    if context.service_mode == "windows-task":
+        for command in (["schtasks", "/End", "/TN", context.service_name], ["schtasks", "/Run", "/TN", context.service_name]):
+            print_action(dry_run, " ".join(command))
+            if not dry_run:
+                run(command, check=False)
+        return
     command = service_command(context, "restart")
     print_action(dry_run, " ".join(command))
     if not dry_run:
@@ -594,6 +779,29 @@ def restart_service(context: DeployContext, dry_run: bool) -> None:
 
 
 def stop_disable_service(context: DeployContext, dry_run: bool) -> None:
+    if context.service_mode == "launchd":
+        path = service_file_path(context)
+        for command in (
+            ["launchctl", "bootout", f"gui/{os.getuid()}", str(path)],
+            ["launchctl", "disable", f"gui/{os.getuid()}/{launchd_label(context)}"],
+        ):
+            print_action(dry_run, " ".join(command))
+            if not dry_run:
+                run(command, check=False)
+        print_action(dry_run, f"remove launch agent {path}")
+        if not dry_run and path.exists():
+            path.unlink()
+        return
+    if context.service_mode == "windows-task":
+        for command in (["schtasks", "/End", "/TN", context.service_name], ["schtasks", "/Delete", "/TN", context.service_name, "/F"]):
+            print_action(dry_run, " ".join(command))
+            if not dry_run:
+                run(command, check=False)
+        path = service_file_path(context)
+        print_action(dry_run, f"remove Windows start script {path}")
+        if not dry_run and path.exists():
+            path.unlink()
+        return
     for action in ("stop", "disable"):
         command = service_command(context, action)
         print_action(dry_run, " ".join(command))
@@ -629,16 +837,21 @@ def uninstall_files(install_dir: Path, delete_data: bool, dry_run: bool) -> None
 
 
 def preferred_python(install_dir: Path, venv_name: str) -> Path:
-    preferred = install_dir / venv_name / "bin/python"
+    preferred = install_dir / venv_name / bin_dir() / python_executable_name()
     if preferred.exists():
         return preferred
-    fallback = install_dir / DEFAULT_FALLBACK_VENV / "bin/python"
+    fallback = install_dir / DEFAULT_FALLBACK_VENV / bin_dir() / python_executable_name()
     if fallback.exists():
         return fallback
     return preferred
 
 
 def service_file_path(context: DeployContext) -> Path:
+    if context.service_mode == "launchd":
+        name = context.service_name if context.service_name.endswith(".plist") else f"{context.service_name}.plist"
+        return Path.home() / "Library/LaunchAgents" / name
+    if context.service_mode == "windows-task":
+        return context.install_dir / "data_store/system_config/start_uav_detection.cmd"
     if context.service_mode == "user":
         return Path.home() / ".config/systemd/user" / context.service_name
     return SERVICE_FILE_ROOT / context.service_name
@@ -653,6 +866,10 @@ def service_command(context: DeployContext, action: str) -> list[str]:
 def service_active(context: DeployContext) -> bool:
     if context.no_service:
         return False
+    if context.service_mode == "launchd":
+        return command_ok(["launchctl", "print", f"gui/{os.getuid()}/{launchd_label(context)}"])
+    if context.service_mode == "windows-task":
+        return command_ok(["schtasks", "/Query", "/TN", context.service_name])
     command = ["systemctl", "--user", "is-active", "--quiet", context.service_name] if context.service_mode == "user" else [
         "systemctl",
         "is-active",
@@ -713,6 +930,18 @@ def print_action(dry_run: bool, message: str) -> None:
 
 def timestamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def bin_dir() -> str:
+    return "Scripts" if platform.system() == "Windows" else "bin"
+
+
+def python_executable_name() -> str:
+    return "python.exe" if platform.system() == "Windows" else "python"
+
+
+def launchd_label(context: DeployContext) -> str:
+    return context.service_name[:-6] if context.service_name.endswith(".plist") else context.service_name
 
 
 if __name__ == "__main__":

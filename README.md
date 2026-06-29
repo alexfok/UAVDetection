@@ -57,6 +57,53 @@ If Google Drive Desktop is mounted instead of rclone, download with:
 python3 scripts/datastore_sync.py sync-down --yes --backend local --local-remote-path <mounted-folder>
 ```
 
+## Deployment Build Artifacts
+
+For normal code releases, build a code-only deployment artifact:
+
+```bash
+python3 scripts/build_deployment.py
+```
+
+The artifact is written under `data_store/deployment_artifacts/` as a ZIP by default. It intentionally excludes `data_store/`, virtualenvs, model weights outside `data_store/`, recordings, reports, and other runtime artifacts. Target machines should get data through `scripts/datastore_sync.py`, Google Drive, or their already installed local `data_store/`.
+
+To build a tarball instead:
+
+```bash
+python3 scripts/build_deployment.py --format tar.gz
+```
+
+On the target machine, extract the artifact and run the deployment manager from inside the extracted folder. All mutating commands start with a prerequisite check:
+
+```bash
+python3 scripts/deploy.py preflight --install-dir ~/UAVDetection
+python3 scripts/deploy.py upgrade --install-dir ~/UAVDetection --skip-deps
+```
+
+Clean install, upgrade, and uninstall use the same command shape on supported targets:
+
+```bash
+# clean install into an empty target
+python3 scripts/deploy.py install --install-dir ~/UAVDetection --allow-online
+
+# safe code upgrade, preserving data_store
+python3 scripts/deploy.py upgrade --install-dir ~/UAVDetection --skip-deps
+
+# uninstall while preserving data_store beside the install
+python3 scripts/deploy.py uninstall --install-dir ~/UAVDetection --yes
+```
+
+Target-specific defaults:
+
+```text
+Jetson/Linux ARM: --target jetson   -> systemd service, .venv_cuda
+Linux desktop:    --target linux    -> user systemd service, .venv
+macOS:            --target macos    -> LaunchAgent, .venv
+Windows:          --target windows  -> scheduled task, .venv
+```
+
+Use `--service-mode none` for non-destructive install/upgrade/uninstall process tests that should not touch the service manager.
+
 ## Offline USB Deployment
 
 Use this path when the target computer has no Internet access. The bundle contains the repo code, the current `data_store/`, install scripts, and a Python wheelhouse when package download succeeds on the packaging machine.
@@ -195,39 +242,39 @@ Run the prerequisites check first:
 ```bash
 ssh ubuntu@192.168.100.197
 cd ~/UAVDetection_deploy_stage
-python3 scripts/deploy_jetson.py preflight --install-dir ~/UAVDetection
+python3 scripts/deploy.py preflight --target jetson --install-dir ~/UAVDetection
 ```
 
 Upgrade an existing Jetson install while preserving `data_store/`, camera config, credentials, certificates, models, datasets, recordings, and logs:
 
 ```bash
-python3 scripts/deploy_jetson.py upgrade --install-dir ~/UAVDetection --skip-deps
+python3 scripts/deploy.py upgrade --target jetson --install-dir ~/UAVDetection --skip-deps
 ```
 
 Clean install to an empty target:
 
 ```bash
-python3 scripts/deploy_jetson.py install --install-dir ~/UAVDetection --skip-deps
+python3 scripts/deploy.py install --target jetson --install-dir ~/UAVDetection --skip-deps
 ```
 
 If the install directory already exists, uninstall first or pass `--replace-existing` deliberately. Uninstall requires confirmation and preserves `data_store/` by default by moving it beside the install directory:
 
 ```bash
-python3 scripts/deploy_jetson.py uninstall --install-dir ~/UAVDetection --yes
+python3 scripts/deploy.py uninstall --target jetson --install-dir ~/UAVDetection --yes
 ```
 
 Only use `--delete-data` when raw media, annotations, models, camera configuration, credentials, logs, and recordings can be discarded:
 
 ```bash
-python3 scripts/deploy_jetson.py uninstall --install-dir ~/UAVDetection --yes --delete-data
+python3 scripts/deploy.py uninstall --target jetson --install-dir ~/UAVDetection --yes --delete-data
 ```
 
 For non-destructive process testing on Jetson, use a temporary target and disable service changes:
 
 ```bash
-python3 scripts/deploy_jetson.py install --install-dir ~/UAVDetection_deploy_test --service-mode none --skip-deps
-python3 scripts/deploy_jetson.py upgrade --install-dir ~/UAVDetection_deploy_test --service-mode none --skip-deps
-python3 scripts/deploy_jetson.py uninstall --install-dir ~/UAVDetection_deploy_test --service-mode none --yes
+python3 scripts/deploy.py install --target jetson --install-dir ~/UAVDetection_deploy_test --service-mode none --skip-deps
+python3 scripts/deploy.py upgrade --target jetson --install-dir ~/UAVDetection_deploy_test --service-mode none --skip-deps
+python3 scripts/deploy.py uninstall --target jetson --install-dir ~/UAVDetection_deploy_test --service-mode none --yes
 ```
 
 The live Jetson service is normally `uav-detection.service` under systemd. Service install/restart may require an interactive sudo password; the preflight reports this before the upgrade reaches the restart step.
