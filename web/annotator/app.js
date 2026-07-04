@@ -1,5 +1,15 @@
 const state = {
-  mode: "annotate",
+  mode: "live",
+  uiLayout: {
+    activeTab: "live",
+    liveMode: "live",
+    show: {
+      media: true,
+      controls: true,
+      status: true,
+      events: true,
+    },
+  },
   media: [],
   filtered: [],
   currentIndex: -1,
@@ -33,12 +43,21 @@ const state = {
   debugTrackingReady: false,
 };
 
+const UI_LAYOUT_STORAGE_KEY = "uavUiLayout";
+
 const els = {
   notificationTray: document.getElementById("notificationTray"),
+  workspace: document.getElementById("workspace"),
+  stage: document.getElementById("stage"),
+  appBrand: document.getElementById("appBrand"),
   annotateTabButton: document.getElementById("annotateTabButton"),
   liveTabButton: document.getElementById("liveTabButton"),
   trainingTabButton: document.getElementById("trainingTabButton"),
   diagnosticsTabButton: document.getElementById("diagnosticsTabButton"),
+  panelMediaToggle: document.getElementById("panelMediaToggle"),
+  panelControlsToggle: document.getElementById("panelControlsToggle"),
+  panelStatusToggle: document.getElementById("panelStatusToggle"),
+  panelEventsToggle: document.getElementById("panelEventsToggle"),
   annotationTab: document.getElementById("annotationTab"),
   liveTab: document.getElementById("liveTab"),
   trainingTab: document.getElementById("trainingTab"),
@@ -80,6 +99,12 @@ const els = {
   backButton: document.getElementById("backButton"),
   forwardButton: document.getElementById("forwardButton"),
   liveCameraSelect: document.getElementById("liveCameraSelect"),
+  liveModeLiveButton: document.getElementById("liveModeLiveButton"),
+  liveModeAdvancedButton: document.getElementById("liveModeAdvancedButton"),
+  liveMinimalControls: document.getElementById("liveMinimalControls"),
+  liveAdvancedControls: document.getElementById("liveAdvancedControls"),
+  liveCameraChipList: document.getElementById("liveCameraChipList"),
+  liveConfChipValue: document.getElementById("liveConfChipValue"),
   liveCameraProfileSelect: document.getElementById("liveCameraProfileSelect"),
   liveClearCamerasButton: document.getElementById("liveClearCamerasButton"),
   liveClearMediaButton: document.getElementById("liveClearMediaButton"),
@@ -96,6 +121,8 @@ const els = {
   liveDeviceSelect: document.getElementById("liveDeviceSelect"),
   liveRecordInput: document.getElementById("liveRecordInput"),
   liveRecordLabelsInput: document.getElementById("liveRecordLabelsInput"),
+  liveSnapshotButton: document.getElementById("liveSnapshotButton"),
+  liveFullscreenButton: document.getElementById("liveFullscreenButton"),
   liveStartButton: document.getElementById("liveStartButton"),
   liveStopButton: document.getElementById("liveStopButton"),
   liveVideoPreview: document.getElementById("liveVideoPreview"),
@@ -103,8 +130,17 @@ const els = {
   liveStream: document.getElementById("liveStream"),
   liveStreamGrid: document.getElementById("liveStreamGrid"),
   livePlaceholder: document.getElementById("livePlaceholder"),
+  liveViewer: document.getElementById("liveViewer"),
   liveTitle: document.getElementById("liveTitle"),
   liveStatus: document.getElementById("liveStatus"),
+  liveStatusBar: document.getElementById("liveStatusBar"),
+  liveStatusState: document.getElementById("liveStatusState"),
+  liveStatusCameras: document.getElementById("liveStatusCameras"),
+  liveStatusFps: document.getElementById("liveStatusFps"),
+  liveStatusDetectFps: document.getElementById("liveStatusDetectFps"),
+  liveStatusLatency: document.getElementById("liveStatusLatency"),
+  liveStatusTracks: document.getElementById("liveStatusTracks"),
+  liveStatusSource: document.getElementById("liveStatusSource"),
   liveRefreshEventsButton: document.getElementById("liveRefreshEventsButton"),
   liveRemoveEventsButton: document.getElementById("liveRemoveEventsButton"),
   liveEventsUpdatedAt: document.getElementById("liveEventsUpdatedAt"),
@@ -163,12 +199,15 @@ const baseCtx = state.baseCanvas.getContext("2d");
 init();
 
 async function init() {
+  loadUiLayout();
   const defaults = await getJson("/api/defaults");
   els.folderInput.value = defaults.folder;
   els.projectInput.value = defaults.project_dir;
   state.liveModelPath = defaults.live_model || "data_store/models/trained/yolov8n_drone_best.pt";
   els.liveSourceInput.value = "0";
   bindEvents();
+  applyUiLayout();
+  showTab(state.uiLayout.activeTab, { persist: false });
   await startDefaultDebugSession();
   onTrainingScopeChanged();
   await loadLiveCameras();
@@ -185,7 +224,21 @@ function bindEvents() {
   els.annotateTabButton.addEventListener("click", () => showTab("annotate"));
   els.liveTabButton.addEventListener("click", () => showTab("live"));
   els.trainingTabButton.addEventListener("click", () => showTab("training"));
-  els.diagnosticsTabButton.addEventListener("click", () => showTab("diagnostics"));
+  if (els.diagnosticsTabButton) {
+    els.diagnosticsTabButton.addEventListener("click", () => showTab("diagnostics"));
+  }
+  [
+    ["media", els.panelMediaToggle],
+    ["controls", els.panelControlsToggle],
+    ["status", els.panelStatusToggle],
+    ["events", els.panelEventsToggle],
+  ].forEach(([panel, element]) => {
+    if (element) element.addEventListener("click", () => togglePanel(panel));
+  });
+  els.liveModeLiveButton.addEventListener("click", () => setLiveMode("live"));
+  els.liveModeAdvancedButton.addEventListener("click", () => setLiveMode("advanced"));
+  els.liveSnapshotButton.addEventListener("click", snapshotLiveFrame);
+  els.liveFullscreenButton.addEventListener("click", requestLiveFullscreen);
   els.scanButton.addEventListener("click", scanFolder);
   els.folderInput.addEventListener("change", refreshStats);
   els.projectInput.addEventListener("change", refreshStats);
@@ -207,6 +260,9 @@ function bindEvents() {
   els.livePresetSelect.addEventListener("change", applyLivePreset);
   [els.livePreviewFpsInput, els.liveDetectionFpsInput, els.liveFrameSkipInput, els.liveImageSizeInput, els.liveJpegQualityInput].forEach((input) => {
     input.addEventListener("input", markLivePresetCustom);
+  });
+  [els.liveConfInput, els.livePreviewFpsInput, els.liveDetectionFpsInput, els.liveFrameSkipInput, els.liveImageSizeInput, els.liveJpegQualityInput].forEach((input) => {
+    input.addEventListener("input", updateLiveUiStatus);
   });
   els.livePreviewSizeSelect.addEventListener("change", markLivePresetCustom);
   els.liveDeviceSelect.addEventListener("change", stopLiveDetectionForSourceChange);
@@ -254,29 +310,126 @@ function bindEvents() {
   els.canvas.addEventListener("pointerdown", onPointerDown);
   els.canvas.addEventListener("pointermove", onPointerMove);
   els.canvas.addEventListener("pointerup", onPointerUp);
-  window.addEventListener("resize", draw);
+  window.addEventListener("resize", () => {
+    draw();
+    applyWorkspaceGrid();
+  });
   window.addEventListener("keydown", onKeyDown);
   bindDebugActivityTracking();
 }
 
-function showTab(name) {
+function loadUiLayout() {
+  try {
+    const raw = localStorage.getItem(UI_LAYOUT_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    const show = parsed && typeof parsed.show === "object" ? parsed.show : {};
+    state.uiLayout = {
+      activeTab: ["annotate", "live", "training"].includes(parsed.activeTab) ? parsed.activeTab : "live",
+      liveMode: parsed.liveMode === "advanced" ? "advanced" : "live",
+      show: {
+        media: show.media !== false,
+        controls: show.controls !== false,
+        status: show.status !== false,
+        events: show.events !== false,
+      },
+    };
+  } catch (_error) {
+    state.uiLayout = {
+      activeTab: "live",
+      liveMode: "live",
+      show: { media: true, controls: true, status: true, events: true },
+    };
+  }
+}
+
+function saveUiLayout() {
+  try {
+    localStorage.setItem(UI_LAYOUT_STORAGE_KEY, JSON.stringify(state.uiLayout));
+  } catch (_error) {
+    // Ignore private browsing or locked-down browser storage.
+  }
+}
+
+function applyUiLayout() {
+  const show = state.uiLayout.show;
+  const liveMode = state.uiLayout.liveMode === "advanced" ? "advanced" : "live";
+  els.liveTab.classList.toggle("liveMode-live", liveMode === "live");
+  els.liveTab.classList.toggle("liveMode-advanced", liveMode === "advanced");
+  els.liveModeLiveButton.classList.toggle("active", liveMode === "live");
+  els.liveModeAdvancedButton.classList.toggle("active", liveMode === "advanced");
+  els.liveModeLiveButton.setAttribute("aria-pressed", String(liveMode === "live"));
+  els.liveModeAdvancedButton.setAttribute("aria-pressed", String(liveMode === "advanced"));
+  els.stage?.classList.toggle("controlsHidden", !show.controls);
+  els.stage?.classList.toggle("statusHidden", !show.status);
+  els.workspace.classList.toggle("panelMediaHidden", !show.media);
+  els.workspace.classList.toggle("panelEventsHidden", !show.events);
+  updatePanelToggle(els.panelMediaToggle, show.media);
+  updatePanelToggle(els.panelControlsToggle, show.controls);
+  updatePanelToggle(els.panelStatusToggle, show.status);
+  updatePanelToggle(els.panelEventsToggle, show.events);
+  applyWorkspaceGrid();
+  updateLiveUiStatus();
+}
+
+function updatePanelToggle(element, active) {
+  if (!element) return;
+  element.classList.toggle("active", active);
+  element.setAttribute("aria-pressed", String(active));
+}
+
+function applyWorkspaceGrid() {
+  if (!els.workspace) return;
+  if (window.matchMedia("(max-width: 759px)").matches) {
+    els.workspace.style.gridTemplateColumns = "";
+    return;
+  }
+  const sideMin = window.matchMedia("(max-width: 1179px)").matches ? "190px" : "230px";
+  const cols = [];
+  if (state.uiLayout.show.media) cols.push(`minmax(${sideMin},1fr)`);
+  cols.push("minmax(0,4fr)");
+  if (state.uiLayout.show.events) cols.push(`minmax(${sideMin},1fr)`);
+  els.workspace.style.gridTemplateColumns = cols.join(" ");
+}
+
+function togglePanel(panel) {
+  if (!Object.prototype.hasOwnProperty.call(state.uiLayout.show, panel)) return;
+  state.uiLayout.show[panel] = !state.uiLayout.show[panel];
+  applyUiLayout();
+  saveUiLayout();
+  trackUiActivity("panel_toggled", { panel, active: state.uiLayout.show[panel] });
+}
+
+function setLiveMode(mode) {
+  state.uiLayout.liveMode = mode === "advanced" ? "advanced" : "live";
+  applyUiLayout();
+  saveUiLayout();
+  trackUiActivity("live_mode_changed", { live_mode: state.uiLayout.liveMode });
+}
+
+function showTab(name, options = {}) {
   const live = name === "live";
   const training = name === "training";
   const diagnostics = name === "diagnostics";
   state.mode = live ? "live" : training ? "training" : diagnostics ? "diagnostics" : "annotate";
+  if (options.persist !== false) {
+    state.uiLayout.activeTab = state.mode;
+    saveUiLayout();
+  }
   els.liveTab.classList.toggle("active", live);
   els.trainingTab.classList.toggle("active", training);
-  els.diagnosticsTab.classList.toggle("active", diagnostics);
+  if (els.diagnosticsTab) els.diagnosticsTab.classList.toggle("active", diagnostics);
   els.annotationTab.classList.toggle("active", !live && !training && !diagnostics);
   els.liveView.classList.toggle("active", live);
   els.trainingView.classList.toggle("active", training);
-  els.diagnosticsView.classList.toggle("active", diagnostics);
+  if (els.diagnosticsView) els.diagnosticsView.classList.toggle("active", diagnostics);
   els.annotationView.classList.toggle("active", !live && !training && !diagnostics);
   els.liveTabButton.classList.toggle("active", live);
   els.trainingTabButton.classList.toggle("active", training);
-  els.diagnosticsTabButton.classList.toggle("active", diagnostics);
+  if (els.diagnosticsTabButton) els.diagnosticsTabButton.classList.toggle("active", diagnostics);
   els.annotateTabButton.classList.toggle("active", !live && !training && !diagnostics);
   trackUiActivity("tab_changed", { mode: state.mode });
+  applyUiLayout();
   renderMediaList();
   if (live) {
     const selectedMedia = selectedLiveMediaItems();
@@ -346,6 +499,54 @@ function renderLiveCameraSelect() {
   [...els.liveCameraSelect.options].forEach((option) => {
     option.selected = previousValues.has(option.value);
   });
+  renderLiveCameraChips();
+  updateLiveUiStatus();
+}
+
+function renderLiveCameraChips() {
+  els.liveCameraChipList.innerHTML = "";
+  const options = [...els.liveCameraSelect.options].filter((option) => option.value && !option.disabled);
+  if (!options.length) {
+    const empty = document.createElement("span");
+    empty.className = "cameraChipEmpty";
+    empty.textContent = "No cameras";
+    els.liveCameraChipList.appendChild(empty);
+    return;
+  }
+  options.slice(0, 8).forEach((option) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `cameraChip${option.selected ? " active" : ""}`;
+    button.setAttribute("aria-pressed", String(option.selected));
+    button.title = option.textContent.trim();
+    button.dataset.value = option.value;
+    const dot = document.createElement("span");
+    dot.className = "cameraChipDot";
+    dot.setAttribute("aria-hidden", "true");
+    const label = document.createElement("span");
+    label.textContent = compactCameraLabel(option.textContent.trim(), option.dataset.source || option.value);
+    button.append(dot, label);
+    button.addEventListener("click", () => {
+      option.selected = !option.selected;
+      onLiveCameraChanged();
+    });
+    els.liveCameraChipList.appendChild(button);
+  });
+  if (options.length > 8) {
+    const more = document.createElement("span");
+    more.className = "cameraChipEmpty";
+    more.textContent = `+${options.length - 8}`;
+    els.liveCameraChipList.appendChild(more);
+  }
+}
+
+function compactCameraLabel(label, fallback) {
+  const raw = label || fallback || "Source";
+  const beforeParen = raw.split("(")[0].trim();
+  const beforeDot = beforeParen.split("·")[0].trim();
+  const compact = beforeDot || raw;
+  if (compact.length <= 16) return compact;
+  return `${compact.slice(0, 13)}...`;
 }
 
 function updateDiagnosticsDefaultCamera() {
@@ -418,6 +619,8 @@ async function scanLocalCameras() {
 
 function onLiveCameraChanged() {
   const selected = selectedLiveSourceOptions();
+  renderLiveCameraChips();
+  updateLiveUiStatus();
   if (!selected.length) {
     updateLiveMediaSourceInput();
     renderMediaList();
@@ -428,6 +631,7 @@ function onLiveCameraChanged() {
       showLivePlaceholder();
     }
     els.liveTitle.textContent = liveSourceLabel();
+    updateLiveUiStatus();
     return;
   }
   clearLiveMediaSelection({ silent: true });
@@ -438,6 +642,7 @@ function onLiveCameraChanged() {
   stopLiveDetectionForSourceChange();
   showLivePlaceholder();
   els.liveTitle.textContent = liveSourceLabel();
+  updateLiveUiStatus();
 }
 
 function toggleLiveMediaSource(item) {
@@ -456,11 +661,13 @@ function toggleLiveMediaSource(item) {
 
 function onLiveCustomSourceInput() {
   clearLiveCameraSelection({ silent: true });
+  renderLiveCameraChips();
   clearLiveMediaSelection({ silent: true });
   renderMediaList();
   stopLiveDetectionForSourceChange();
   showLivePlaceholder();
   els.liveTitle.textContent = liveSourceLabel();
+  updateLiveUiStatus();
 }
 
 function startLiveDetection() {
@@ -628,9 +835,11 @@ function liveStreamUrl(job) {
 function renderLiveStreamGrid(jobs) {
   clearLiveStreamGrid();
   els.liveStreamGrid.style.display = "grid";
+  els.liveStreamGrid.dataset.count = String(jobs.length);
+  els.liveStreamGrid.classList.toggle("many", jobs.length >= 5);
   jobs.forEach((job) => {
     const tile = document.createElement("section");
-    tile.className = "liveStreamTile";
+    tile.className = "liveStreamTile loading";
     tile.dataset.streamKey = job.key;
     if (job.clientRunId) tile.dataset.clientRunId = job.clientRunId;
 
@@ -646,10 +855,12 @@ function renderLiveStreamGrid(jobs) {
     image.className = "liveStreamImage";
     image.alt = "";
     image.addEventListener("load", () => {
-      stateText.textContent = job.clientRunId ? "Streaming · confirming recording" : "Streaming";
+      tile.classList.remove("loading");
+      stateText.textContent = "LIVE";
       if (state.liveRunning) setLiveStatus(`${job.label || "Source"} streaming`);
     });
     image.addEventListener("error", () => {
+      tile.classList.remove("loading");
       stateText.textContent = "Unavailable";
       if (state.liveRunning) setLiveStatus(`${job.label || "Source"} unavailable`);
     });
@@ -664,6 +875,8 @@ function clearLiveStreamGrid() {
   [...els.liveStreamGrid.querySelectorAll("img")].forEach((image) => image.removeAttribute("src"));
   els.liveStreamGrid.innerHTML = "";
   els.liveStreamGrid.style.display = "none";
+  els.liveStreamGrid.removeAttribute("data-count");
+  els.liveStreamGrid.classList.remove("many");
 }
 
 function liveRecordSuffix(job) {
@@ -1137,6 +1350,64 @@ function liveSourceLabel() {
   return els.liveSourceInput.value || "Custom source";
 }
 
+function updateLiveUiStatus() {
+  if (els.liveConfChipValue) {
+    const conf = Number.parseFloat(els.liveConfInput.value || "0.3");
+    els.liveConfChipValue.textContent = Number.isFinite(conf) ? conf.toFixed(2) : "0.30";
+  }
+  if (!els.liveStatusBar) return;
+  const selectedSources = selectedLiveSourceOptions().length;
+  const selectedMedia = selectedLiveMediaItems().length;
+  const hasCustom = Boolean(els.liveSourceInput.value.trim());
+  const sourceCount = selectedSources || selectedMedia || (hasCustom ? 1 : 0);
+  const detectFps = Number.parseFloat(els.liveDetectionFpsInput.value || "2");
+  els.liveStatusBar.classList.toggle("running", state.liveRunning);
+  els.liveStatusState.textContent = state.liveRunning ? "Detecting" : (els.liveStatus.textContent || "Idle");
+  els.liveStatusCameras.textContent = String(sourceCount);
+  els.liveStatusFps.textContent = els.livePreviewFpsInput.value || "-";
+  els.liveStatusDetectFps.textContent = Number.isFinite(detectFps) ? `${formatCompactNumber(detectFps)} Hz` : "-";
+  els.liveStatusLatency.textContent = "-";
+  els.liveStatusTracks.textContent = String(activeLiveTrackCount());
+  els.liveStatusSource.textContent = liveSourceLabel();
+}
+
+function formatCompactNumber(value) {
+  if (!Number.isFinite(value)) return "-";
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function activeLiveTrackCount() {
+  if (!state.liveRunning) return 0;
+  const tracks = new Set();
+  state.liveEvents.slice(0, 30).forEach((event) => {
+    const best = event.best_track || {};
+    const trackId = best.track_id ?? event.track_id ?? "";
+    if (trackId !== "") tracks.add(String(trackId));
+  });
+  return tracks.size;
+}
+
+function snapshotLiveFrame() {
+  const target = els.liveViewer || els.liveView;
+  if (!target) return;
+  target.classList.remove("snapshotFlash");
+  void target.offsetWidth;
+  target.classList.add("snapshotFlash");
+  window.setTimeout(() => target.classList.remove("snapshotFlash"), 260);
+  trackUiActivity("live_snapshot_requested", { source: liveSourceLabel(), running: state.liveRunning });
+}
+
+function requestLiveFullscreen() {
+  const target = els.liveViewer || els.liveView;
+  if (!target) return;
+  trackUiActivity("live_fullscreen_requested", { source: liveSourceLabel(), running: state.liveRunning });
+  if (document.fullscreenElement) {
+    document.exitFullscreen();
+    return;
+  }
+  if (target.requestFullscreen) target.requestFullscreen();
+}
+
 function selectedLiveSourceOptions() {
   return [...els.liveCameraSelect.selectedOptions].filter((option) => option.value && !option.disabled);
 }
@@ -1149,6 +1420,8 @@ function clearLiveCameraSelection(options = {}) {
   [...els.liveCameraSelect.options].forEach((option) => {
     option.selected = false;
   });
+  renderLiveCameraChips();
+  updateLiveUiStatus();
   if (options.silent) return;
   onLiveCameraChanged();
 }
@@ -1165,6 +1438,7 @@ function selectedLiveMediaItems() {
 
 function clearLiveMediaSelection(options = {}) {
   state.liveSelectedMediaPaths = [];
+  updateLiveUiStatus();
   if (options.silent) return;
   updateLiveMediaSourceInput();
   renderMediaList();
@@ -1660,11 +1934,13 @@ function renderLiveEvents() {
   if (!state.liveEvents.length) {
     els.liveEventList.innerHTML = `<div class="emptyState">No events yet</div>`;
     updateRemoveEventsButton();
+    updateLiveUiStatus();
     return;
   }
 
   els.liveEventList.innerHTML = state.liveEvents.map((event) => liveEventMarkup(event)).join("");
   updateRemoveEventsButton();
+  updateLiveUiStatus();
 }
 
 function liveEventMarkup(event) {
@@ -1916,6 +2192,7 @@ function setStatus(text) {
 
 function setLiveStatus(text) {
   els.liveStatus.textContent = text;
+  updateLiveUiStatus();
 }
 
 async function startDefaultDebugSession() {
@@ -1942,10 +2219,18 @@ function bindDebugActivityTracking() {
     "scanButton",
     "refreshStatsButton",
     "removeSelectedMediaButton",
+    "panelMediaToggle",
+    "panelControlsToggle",
+    "panelStatusToggle",
+    "panelEventsToggle",
     "captureButton",
     "saveButton",
     "negativeButton",
+    "liveModeLiveButton",
+    "liveModeAdvancedButton",
     "liveScanLocalButton",
+    "liveSnapshotButton",
+    "liveFullscreenButton",
     "liveStartButton",
     "liveStopButton",
     "liveRefreshEventsButton",

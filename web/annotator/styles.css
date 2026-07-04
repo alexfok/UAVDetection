@@ -113,14 +113,45 @@ label {
   border-color: var(--danger);
 }
 
-.tabs {
+.appShellBar {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 12px;
+  row-gap: 8px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--line);
   background: #0f1113;
+}
+
+.appBrand {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 10px;
+  border-right: 1px solid #23272b;
+  color: #dfe4e8;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.brandDot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+}
+
+.tabs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .tabButton {
@@ -132,6 +163,58 @@ label {
   background: #16313a;
 }
 
+.layoutControls {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.layoutControlsLabel {
+  margin-right: 4px;
+  color: #6f7880;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.panelToggle,
+.cameraChip {
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: 15px;
+  padding: 0 12px 0 10px;
+  color: #6f7880;
+  font-size: 12px;
+  font-weight: 600;
+  background: #181b1e;
+}
+
+.panelToggle.active,
+.cameraChip.active {
+  border-color: var(--accent);
+  background: #12262d;
+  color: #e7edf1;
+}
+
+.panelToggleDot,
+.cameraChipDot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #4a5158;
+}
+
+.panelToggle.active .panelToggleDot,
+.cameraChip.active .cameraChipDot {
+  background: var(--accent);
+}
+
 .topbar {
   display: flex;
   align-items: end;
@@ -140,6 +223,181 @@ label {
   padding: 12px;
   border-bottom: 1px solid var(--line);
   background: var(--panel);
+}
+
+.detectionBar {
+  align-items: center;
+  gap: 12px;
+  row-gap: 10px;
+}
+
+.liveModeSwitch {
+  flex: 0 0 auto;
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0f1113;
+}
+
+.segmentButton {
+  height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 16px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.segmentButton:hover {
+  border-color: transparent;
+}
+
+.segmentButton.active {
+  background: var(--accent);
+  color: #08222b;
+}
+
+.liveMinimalControls,
+.liveAdvancedControls,
+.liveRunControls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  row-gap: 8px;
+  min-width: 0;
+}
+
+.liveMinimalControls {
+  flex: 1 1 360px;
+}
+
+.liveAdvancedControls {
+  flex: 1 1 100%;
+  align-items: end;
+}
+
+.liveRunControls {
+  margin-left: auto;
+}
+
+.liveCameraPicker {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.compactLabel {
+  margin-right: 2px;
+  color: #6f7880;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.cameraChipList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cameraChipEmpty {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  color: #6f7880;
+  font-size: 12px;
+}
+
+.metricChip {
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #0f1113;
+}
+
+.metricChip span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.metricChip strong {
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.iconTextButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.liveAdvancedOnly {
+  display: inline-flex;
+}
+
+.liveMode-live .liveAdvancedControls,
+.liveMode-live .liveAdvancedOnly {
+  display: none;
+}
+
+.liveMode-advanced .liveMinimalControls {
+  display: none;
+}
+
+.liveStatusBar {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  background: #0f1113;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.liveStatusBar strong {
+  color: var(--text);
+}
+
+.liveStatusState {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 12px;
+  border-right: 1px solid var(--line);
+}
+
+.statusDot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #6f7880;
+}
+
+.liveStatusBar.running .statusDot {
+  background: var(--good);
+  box-shadow: 0 0 8px var(--good);
+}
+
+.liveStatusSource {
+  min-width: 0;
+  flex: 1 1 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .modeToolbar {
@@ -210,8 +468,18 @@ label {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr) minmax(300px, 360px);
+  grid-template-columns: minmax(230px, 1fr) minmax(0, 4fr) minmax(230px, 1fr);
   overflow: hidden;
+}
+
+.workspace.panelMediaHidden .mediaPanel,
+.workspace.panelEventsHidden .eventsPanel {
+  display: none;
+}
+
+.stage.controlsHidden .modeToolbar.active,
+.stage.statusHidden .liveStatusBar {
+  display: none;
 }
 
 .mediaPanel {
@@ -541,10 +809,23 @@ label {
   flex: 1;
   min-height: 0;
   position: relative;
-  display: block;
-  overflow: auto;
-  padding: 12px;
+  display: flex;
+  overflow: hidden;
+  padding: 0;
   background: #080a0c;
+}
+
+.snapshotFlash {
+  animation: snapshotFlash 240ms ease-out;
+}
+
+@keyframes snapshotFlash {
+  0% {
+    filter: brightness(2.4);
+  }
+  100% {
+    filter: brightness(1);
+  }
 }
 
 #liveVideoPreview,
@@ -560,26 +841,58 @@ label {
 
 .liveStreamGrid {
   display: none;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: center;
   gap: 12px;
+  padding: 16px;
+  scrollbar-gutter: stable;
+}
+
+.liveStreamGrid[data-count="1"] {
+  grid-template-columns: minmax(0, min(100%, 1100px));
+  justify-content: center;
+}
+
+.liveStreamGrid[data-count="2"],
+.liveStreamGrid[data-count="3"],
+.liveStreamGrid[data-count="4"] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.liveStreamGrid[data-count="5"],
+.liveStreamGrid[data-count="6"],
+.liveStreamGrid[data-count="7"],
+.liveStreamGrid[data-count="8"],
+.liveStreamGrid[data-count="9"],
+.liveStreamGrid.many {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-content: start;
 }
 
 .liveStreamTile {
   min-width: 0;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: #101315;
+  position: relative;
+  aspect-ratio: 16 / 9;
+  border: 1px solid #23282d;
+  border-radius: 8px;
+  background: linear-gradient(160deg, #0d1418, #0a0f13);
   overflow: hidden;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.4);
 }
 
 .liveStreamTileHeader {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  right: 10px;
+  z-index: 2;
   display: flex;
   justify-content: space-between;
-  gap: 10px;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 12px;
+  gap: 12px;
+  pointer-events: none;
 }
 
 .liveStreamTileHeader strong,
@@ -588,23 +901,52 @@ label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  border-radius: 999px;
+  background: rgba(8, 10, 12, 0.82);
+  backdrop-filter: blur(3px);
 }
 
 .liveStreamTileHeader strong {
   color: var(--text);
+  padding: 4px 9px;
+  font-size: 12px;
+}
+
+.liveStreamTileHeader strong::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--good);
+}
+
+.liveStreamTileHeader span {
+  flex: 0 0 auto;
+  color: var(--text);
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
 }
 
 .liveStreamImage {
   display: block;
   width: 100%;
-  max-height: calc(100vh - 230px);
+  height: 100%;
   object-fit: contain;
   background: #050607;
 }
 
+.liveStreamTile.loading .liveStreamImage {
+  opacity: 0.7;
+}
+
 .livePlaceholder {
   min-height: 240px;
-  width: 100%;
+  width: calc(100% - 24px);
+  margin: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -779,6 +1121,74 @@ label {
   font-size: 12px;
 }
 
+.diagnosticsDock {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--line);
+  background: #151719;
+}
+
+.diagnosticsDockHeader .panelActions button {
+  height: 30px;
+}
+
+.diagnosticsControls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px;
+}
+
+.diagnosticsControls .field,
+.diagnosticsControls .field.small,
+.diagnosticsControls .field.medium,
+.diagnosticsControls .field.tiny {
+  width: auto;
+  min-width: 0;
+}
+
+.diagnosticsControls .toggleField,
+.diagnosticsControls button {
+  width: 100%;
+}
+
+.diagnosticsSummary {
+  max-height: 44vh;
+  overflow: auto;
+  padding: 10px;
+  scrollbar-gutter: stable;
+}
+
+.diagnosticsCards {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.diagnosticsSummary .trainingCard,
+.diagnosticsReportBlock {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #101315;
+}
+
+.diagnosticsArtifactLine {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.diagnosticsReportBlock {
+  margin-top: 8px;
+}
+
+.diagnosticsSummary .trainingLog {
+  min-height: 120px;
+  max-height: 24vh;
+}
+
 .eventsPanel {
   min-width: 0;
   min-height: 0;
@@ -905,7 +1315,21 @@ label {
   text-align: center;
 }
 
-@media (max-width: 860px) {
+@media (min-width: 760px) and (max-width: 1179px) {
+  .workspace {
+    grid-template-columns: minmax(190px, 1fr) minmax(0, 4fr) minmax(190px, 1fr);
+  }
+
+  .layoutControlsLabel {
+    display: none;
+  }
+
+  .liveStreamGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 759px) {
   body {
     overflow: auto;
   }
@@ -917,14 +1341,37 @@ label {
   }
 
   .notificationTray {
-    top: 46px;
+    top: 54px;
     right: 8px;
     width: calc(100vw - 16px);
+  }
+
+  .appShellBar {
+    align-items: center;
+  }
+
+  .layoutControls {
+    margin-left: 0;
+  }
+
+  .layoutControlsLabel {
+    display: none;
   }
 
   .topbar {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .liveMinimalControls,
+  .liveAdvancedControls,
+  .liveRunControls,
+  .liveCameraPicker {
+    width: 100%;
+  }
+
+  .liveRunControls {
+    margin-left: 0;
   }
 
   .field.small,
@@ -941,14 +1388,18 @@ label {
     display: flex;
     flex-direction: column;
     min-height: 0;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
   .mediaPanel {
-    flex: 0 0 42vh;
+    order: 2;
+    flex: 0 0 auto;
     min-height: 240px;
-    max-height: 420px;
+    max-height: 66vh;
     border-right: 0;
-    border-bottom: 1px solid var(--line);
+    border-top: 1px solid var(--line);
+    border-bottom: 0;
   }
 
   .panelHeader {
@@ -974,19 +1425,45 @@ label {
   }
 
   .stage {
-    min-height: 58vh;
+    order: 0;
+    min-height: 54vh;
     overflow: visible;
   }
 
   .eventsPanel {
+    order: 1;
     flex: 0 0 auto;
-    max-height: 46vh;
+    max-height: 66vh;
     border-left: 0;
     border-top: 1px solid var(--line);
   }
 
+  .diagnosticsControls {
+    grid-template-columns: 1fr;
+  }
+
+  .diagnosticsSummary {
+    max-height: none;
+  }
+
+  .liveStreamGrid,
+  .liveStreamGrid[data-count="1"],
+  .liveStreamGrid[data-count="2"],
+  .liveStreamGrid[data-count="3"],
+  .liveStreamGrid[data-count="4"],
+  .liveStreamGrid[data-count="5"],
+  .liveStreamGrid[data-count="6"],
+  .liveStreamGrid[data-count="7"],
+  .liveStreamGrid[data-count="8"],
+  .liveStreamGrid[data-count="9"],
+  .liveStreamGrid.many {
+    grid-template-columns: 1fr;
+    align-content: start;
+    padding: 12px;
+  }
+
   .viewer {
-    max-height: 62vh;
+    max-height: none;
   }
 
   #videoPlayer,
