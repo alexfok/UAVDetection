@@ -401,28 +401,14 @@
                 <button id="diagnosticsRefreshButton" type="button">Refresh</button>
               </div>
             </div>
-            <div class="diagnosticsControls">
+            <div class="diagnosticsControls diagnosticsPrimaryControls">
               <div class="field medium">
                 <label for="diagnosticsCameraInput">Camera</label>
                 <input id="diagnosticsCameraInput" type="text" spellcheck="false" placeholder="ip_camera_196">
               </div>
-              <div class="field small">
-                <label for="diagnosticsProfileSelect">Profile</label>
-                <select id="diagnosticsProfileSelect">
-                  <option value="main" selected>Main</option>
-                  <option value="preview">Preview</option>
-                </select>
-              </div>
               <div class="field tiny">
                 <label for="diagnosticsSecondsInput">Seconds</label>
                 <input id="diagnosticsSecondsInput" type="number" min="0.5" max="30" step="0.5" value="3">
-              </div>
-              <div class="field small">
-                <label for="diagnosticsPrivacySelect">Privacy</label>
-                <select id="diagnosticsPrivacySelect">
-                  <option value="normal" selected>Normal</option>
-                  <option value="high">High</option>
-                </select>
               </div>
               <label class="toggleField" for="diagnosticsIncludeCameraInput">
                 <input id="diagnosticsIncludeCameraInput" type="checkbox" checked>
@@ -435,6 +421,18 @@
               <button id="diagnosticsReportButton" type="button" disabled>Report</button>
               <button id="diagnosticsSysdumpButton" type="button" disabled>Sysdump</button>
             </div>
+            <details id="diagnosticsAdvancedToolbar" class="diagnosticsAdvancedToolbar">
+              <summary id="diagnosticsAdvancedToggle">Advanced</summary>
+              <div class="diagnosticsAdvancedGrid">
+                <div class="field small">
+                  <label for="diagnosticsPrivacySelect">Privacy</label>
+                  <select id="diagnosticsPrivacySelect">
+                    <option value="normal" selected>Normal</option>
+                    <option value="high">High</option>
+                  </select>
+                </div>
+              </div>
+            </details>
           </section>
 
           <section id="diagnosticsView" class="diagnosticsDock diagnosticsSummary">
