@@ -294,6 +294,23 @@ label {
   margin-left: auto;
 }
 
+.inlineSelectField {
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.inlineSelectField label {
+  margin: 0;
+}
+
+.inlineSelectField select {
+  width: auto;
+  min-width: 112px;
+}
+
 .liveCameraPicker {
   min-width: 0;
   display: flex;

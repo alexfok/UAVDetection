@@ -113,6 +113,9 @@ class UiIntegrityTests(unittest.TestCase):
         self.assertIn("diagnosticsPrivacySelect", ids)
         self.assertNotIn("diagnosticsAdvancedToolbar", ids)
         self.assertNotIn("diagnosticsAdvancedToggle", ids)
+        html = INDEX_PATH.read_text(encoding="utf-8")
+        self.assertLess(html.index('class="liveRunControls"'), html.index("diagnosticsPrivacySelect"))
+        self.assertLess(html.index("diagnosticsPrivacySelect"), html.index("liveRecordInput"))
 
     def test_diagnostics_camera_field_is_read_only(self) -> None:
         parser = parse_index()
