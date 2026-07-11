@@ -16,6 +16,7 @@ class IdCollector(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.ids: list[str] = []
+        self.attrs_by_id: dict[str, dict[str, str]] = {}
         self.classes: list[str] = []
         self.buttons: dict[str, str] = {}
 
@@ -23,6 +24,7 @@ class IdCollector(HTMLParser):
         attr = {key: value or "" for key, value in attrs}
         if "id" in attr:
             self.ids.append(attr["id"])
+            self.attrs_by_id[attr["id"]] = attr
             if tag == "button":
                 self.buttons[attr["id"]] = attr.get("type", "")
         if "class" in attr:
@@ -97,8 +99,6 @@ class UiIntegrityTests(unittest.TestCase):
             "liveStreamGrid",
             "liveEventList",
             "diagnosticsRunButton",
-            "diagnosticsAdvancedToolbar",
-            "diagnosticsAdvancedToggle",
             "diagnosticsPrivacySelect",
             "diagnosticsReportButton",
             "diagnosticsSysdumpButton",
@@ -107,6 +107,20 @@ class UiIntegrityTests(unittest.TestCase):
             "debugSessionIdValue",
         }
         self.assertEqual(sorted(required - ids), [])
+
+    def test_diagnostics_privacy_uses_existing_live_advanced_controls(self) -> None:
+        ids = set(parse_index().ids)
+        self.assertIn("diagnosticsPrivacySelect", ids)
+        self.assertNotIn("diagnosticsAdvancedToolbar", ids)
+        self.assertNotIn("diagnosticsAdvancedToggle", ids)
+
+    def test_diagnostics_camera_field_is_read_only(self) -> None:
+        parser = parse_index()
+        attrs = parser.attrs_by_id["diagnosticsCameraInput"]
+        self.assertIn("readonly", attrs)
+        self.assertEqual(attrs.get("aria-readonly"), "true")
+        self.assertEqual(attrs.get("tabindex"), "-1")
+        self.assertIn("readonlyInput", attrs.get("class", "").split())
 
     def test_layout_persistence_and_live_facade_hooks_exist(self) -> None:
         app = APP_PATH.read_text(encoding="utf-8")

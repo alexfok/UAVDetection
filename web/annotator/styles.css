@@ -64,6 +64,16 @@ select {
   width: 100%;
 }
 
+input.readonlyInput {
+  cursor: default;
+  caret-color: transparent;
+}
+
+input.readonlyInput:focus {
+  outline: none;
+  border-color: var(--line);
+}
+
 label {
   display: block;
   color: var(--muted);
@@ -1131,8 +1141,7 @@ label {
   height: 30px;
 }
 
-.diagnosticsControls,
-.diagnosticsAdvancedGrid {
+.diagnosticsControls {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
@@ -1145,68 +1154,18 @@ label {
 .diagnosticsControls .field,
 .diagnosticsControls .field.small,
 .diagnosticsControls .field.medium,
-.diagnosticsControls .field.tiny,
-.diagnosticsAdvancedGrid .field,
-.diagnosticsAdvancedGrid .field.small {
+.diagnosticsControls .field.tiny {
   width: auto;
   min-width: 0;
 }
 
 .diagnosticsControls .toggleField,
-.diagnosticsControls button,
-.diagnosticsAdvancedGrid select {
+.diagnosticsControls button {
   width: 100%;
 }
 
 .diagnosticsPrimaryControls {
   align-items: end;
-}
-
-.diagnosticsAdvancedToolbar {
-  margin: 0 10px 10px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: #101315;
-}
-
-.diagnosticsAdvancedToolbar summary {
-  height: 34px;
-  display: flex;
-  align-items: center;
-  padding: 0 10px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  list-style: none;
-  text-transform: uppercase;
-}
-
-.diagnosticsAdvancedToolbar summary::-webkit-details-marker {
-  display: none;
-}
-
-.diagnosticsAdvancedToolbar summary::after {
-  content: "+";
-  margin-left: auto;
-  color: var(--accent);
-  font-size: 14px;
-}
-
-.diagnosticsAdvancedToolbar[open] summary {
-  border-bottom: 1px solid var(--line);
-}
-
-.diagnosticsAdvancedToolbar[open] summary::after {
-  content: "-";
-}
-
-.diagnosticsAdvancedGrid {
-  padding: 10px;
-}
-
-.diagnosticsAdvancedGrid .field:only-child {
-  grid-column: 1 / -1;
 }
 
 .diagnosticsSummary {
@@ -1496,8 +1455,7 @@ label {
     border-top: 1px solid var(--line);
   }
 
-  .diagnosticsControls,
-  .diagnosticsAdvancedGrid {
+  .diagnosticsControls {
     grid-template-columns: 1fr;
   }
 
