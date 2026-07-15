@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import tempfile
 import unittest
@@ -15,6 +16,7 @@ from scripts.annotation_server import (
     read_recent_live_events,
     remove_live_event_rows,
     safe_name,
+    upsert_manifest,
     yolo_label_text,
 )
 
@@ -51,6 +53,38 @@ class AnnotationServerHelperTests(unittest.TestCase):
             self.assertEqual(stats["positive"], 1)
             self.assertEqual(stats["negative"], 1)
             self.assertEqual(stats["boxes"], 1)
+
+    def test_upsert_manifest_reports_when_row_is_replaced(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "manifest.csv"
+            created = upsert_manifest(
+                manifest_path,
+                {
+                    "image_id": "frame_1",
+                    "split": "train",
+                    "image_path": "images/train/frame_1.jpg",
+                    "label_path": "labels/train/frame_1.txt",
+                    "box_count": "1",
+                },
+            )
+            replaced = upsert_manifest(
+                manifest_path,
+                {
+                    "image_id": "frame_1",
+                    "split": "train",
+                    "image_path": "images/train/frame_1.jpg",
+                    "label_path": "labels/train/frame_1.txt",
+                    "box_count": "0",
+                },
+            )
+
+            self.assertFalse(created)
+            self.assertTrue(replaced)
+            with manifest_path.open("r", encoding="utf-8", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["image_id"], "frame_1")
+            self.assertEqual(rows[0]["box_count"], "0")
 
     def test_live_event_listing_and_removal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

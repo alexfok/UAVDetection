@@ -41,6 +41,7 @@ const state = {
   diagnosticsPollTimer: null,
   debugSessionId: "",
   debugTrackingReady: false,
+  savingAnnotation: false,
 };
 
 const UI_LAYOUT_STORAGE_KEY = "uavUiLayout";
@@ -1846,30 +1847,83 @@ function eventToImagePoint(event) {
 }
 
 async function saveAnnotation(negative) {
+  if (state.savingAnnotation) return;
   if (!state.current || !state.naturalWidth || !state.naturalHeight) {
-    setStatus("Capture or load an image first");
+    const message = "Capture or load an image first";
+    setStatus(message);
+    showNotification(message, "error", 5000);
     return;
   }
-  const boxes = negative ? [] : state.boxes;
+  const boxes = negative ? [] : state.boxes.map((box) => ({ ...box }));
+  if (!negative && boxes.length === 0) {
+    const message = "Draw at least one box, or use Save Negative.";
+    setStatus(message);
+    showNotification(message, "error", 6000);
+    trackUiActivity("annotation_save_blocked", {
+      reason: "no_boxes",
+      source_path: state.current.path,
+      media_kind: state.current.kind,
+      frame_time: state.current.kind === "video" ? state.frameTime : null,
+      split: els.splitSelect.value,
+    });
+    return;
+  }
+  const frameTime = state.current.kind === "video" ? state.frameTime : null;
   const payload = {
     project_dir: els.projectInput.value,
     class_name: "drone",
     split: els.splitSelect.value,
     source_path: state.current.path,
     media_kind: state.current.kind,
-    frame_time: state.current.kind === "video" ? state.frameTime : null,
+    frame_time: frameTime,
     image_width: state.naturalWidth,
     image_height: state.naturalHeight,
     boxes,
     image_data: state.baseCanvas.toDataURL("image/jpeg", 0.92),
   };
-  const result = await postJson("/api/save", payload);
-  if (result.error) {
-    setStatus(result.error);
-    return;
+  const details = {
+    source_path: payload.source_path,
+    media_kind: payload.media_kind,
+    frame_time: payload.frame_time,
+    split: payload.split,
+    box_count: boxes.length,
+    negative: Boolean(negative),
+  };
+  state.savingAnnotation = true;
+  els.saveButton.disabled = true;
+  els.negativeButton.disabled = true;
+  trackUiActivity("annotation_save_started", details);
+  try {
+    const result = await postJson("/api/save", payload);
+    if (result.error) {
+      throw new Error(result.error);
+    }
+    const action = result.overwrote ? "Updated" : "Saved";
+    const message = `${action} ${result.image_id} (${result.box_count} boxes)`;
+    setStatus(message);
+    showNotification(message, Number(result.box_count || 0) > 0 ? "success" : "info", 4500);
+    trackUiActivity("annotation_save_result", {
+      ...details,
+      ok: true,
+      image_id: result.image_id,
+      box_count: result.box_count,
+      overwrote: Boolean(result.overwrote),
+    });
+    await refreshStats();
+  } catch (error) {
+    const message = `Save failed: ${error.message || error}`;
+    setStatus(message);
+    showNotification(message, "error", 8000);
+    trackUiActivity("annotation_save_result", {
+      ...details,
+      ok: false,
+      error: error.message || String(error),
+    });
+  } finally {
+    state.savingAnnotation = false;
+    els.saveButton.disabled = false;
+    els.negativeButton.disabled = false;
   }
-  setStatus(`Saved ${result.image_id} (${result.box_count} boxes)`);
-  await refreshStats();
 }
 
 function onKeyDown(event) {
@@ -1886,7 +1940,7 @@ function onKeyDown(event) {
 
 async function getJson(url) {
   const response = await fetch(url);
-  return response.json();
+  return parseJsonResponse(response);
 }
 
 async function postJson(url, payload) {
@@ -1895,7 +1949,24 @@ async function postJson(url, payload) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  return response.json();
+  return parseJsonResponse(response);
+}
+
+async function parseJsonResponse(response) {
+  const text = await response.text();
+  let result = {};
+  if (text) {
+    try {
+      result = JSON.parse(text);
+    } catch (_error) {
+      result = { error: text };
+    }
+  }
+  if (!response.ok) {
+    const errorMessage = result && typeof result === "object" && "error" in result ? result.error : "";
+    throw new Error(errorMessage || `${response.status} ${response.statusText}`);
+  }
+  return result;
 }
 
 async function refreshStats() {

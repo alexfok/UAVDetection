@@ -445,7 +445,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         label_path.write_text(yolo_label_text(boxes, width, height), encoding="utf-8")
 
         write_data_yaml(project_dir, class_name)
-        upsert_manifest(
+        overwrote = upsert_manifest(
             project_dir / "manifest.csv",
             {
                 "image_id": safe_id,
@@ -467,6 +467,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         self.send_json(
             {
                 "ok": True,
+                "overwrote": overwrote,
                 "image_id": safe_id,
                 "image_path": str(image_path),
                 "label_path": str(label_path),
@@ -2517,7 +2518,7 @@ class StreamFPSMeter:
         return self._fps
 
 
-def upsert_manifest(path: Path, row: dict[str, str]) -> None:
+def upsert_manifest(path: Path, row: dict[str, str]) -> bool:
     rows: list[dict[str, str]] = []
     if path.exists():
         with path.open("r", encoding="utf-8", newline="") as handle:
@@ -2537,6 +2538,7 @@ def upsert_manifest(path: Path, row: dict[str, str]) -> None:
         writer = csv.DictWriter(handle, fieldnames=MANIFEST_FIELDS)
         writer.writeheader()
         writer.writerows(rows)
+    return replaced
 
 
 if __name__ == "__main__":
