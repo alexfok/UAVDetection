@@ -170,6 +170,10 @@ class UiIntegrityTests(unittest.TestCase):
         self.assertIn('response.headers.get("X-Stream-FPS")', app)
         self.assertIn("startPlaybackTimer", app)
         self.assertIn("previewFps * 1.5", app)
+        self.assertIn("overdueFrames", app)
+        self.assertIn("frames.splice(0, dropCount)", app)
+        self.assertIn("nextFrameAt - performance.now()", app)
+        self.assertNotIn("window.setInterval(async () =>", app)
 
     def test_clickable_buttons_declare_type_button(self) -> None:
         parser = parse_index()

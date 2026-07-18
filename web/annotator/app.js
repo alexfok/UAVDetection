@@ -904,15 +904,40 @@ async function startBufferedLiveStream(job, canvas, tile, stateText) {
 
   function startPlaybackTimer(previewFps) {
     const initialBuffer = Math.max(4, Math.round(previewFps * 1.5));
-    timer = window.setInterval(async () => {
+    const frameDurationMs = 1000 / previewFps;
+    const maxBufferedFrames = Math.max(initialBuffer + 2, Math.round(previewFps * 3));
+    let nextFrameAt = 0;
+
+    function scheduleNextFrame(delayMs) {
+      if (controller.signal.aborted) return;
+      timer = window.setTimeout(playNextFrame, Math.max(0, delayMs));
+    }
+
+    async function playNextFrame() {
+      timer = null;
       if (controller.signal.aborted || drawing) return;
       if (!playbackStarted) {
-        if (frames.length < initialBuffer && !streamEnded) return;
+        if (frames.length < initialBuffer && !streamEnded) {
+          scheduleNextFrame(Math.min(50, frameDurationMs / 2));
+          return;
+        }
         playbackStarted = frames.length > 0;
+        nextFrameAt = performance.now();
       }
+
+      const now = performance.now();
+      if (nextFrameAt > 0 && frames.length > 1 && now - nextFrameAt >= frameDurationMs) {
+        const overdueFrames = Math.floor((now - nextFrameAt) / frameDurationMs);
+        const dropCount = Math.min(overdueFrames, frames.length - 1);
+        if (dropCount > 0) {
+          frames.splice(0, dropCount);
+          nextFrameAt += dropCount * frameDurationMs;
+        }
+      }
+
       const blob = frames.shift();
       if (!blob) {
-        if (streamEnded) window.clearInterval(timer);
+        if (!streamEnded) scheduleNextFrame(Math.min(50, frameDurationMs / 2));
         return;
       }
       drawing = true;
@@ -927,13 +952,27 @@ async function startBufferedLiveStream(job, canvas, tile, stateText) {
         tile.classList.remove("loading");
         stateText.textContent = "LIVE";
         if (state.liveRunning) setLiveStatus(`${job.label || "Source"} streaming`);
+      } catch (error) {
+        if (!controller.signal.aborted) console.warn("Skipping undecodable live preview frame", error);
       } finally {
         drawing = false;
       }
-    }, 1000 / previewFps);
+      nextFrameAt += frameDurationMs;
+      scheduleNextFrame(nextFrameAt - performance.now());
+    }
+
+    scheduleNextFrame(0);
+
+    return {
+      trim() {
+        if (frames.length > maxBufferedFrames) {
+          frames.splice(0, frames.length - maxBufferedFrames);
+        }
+      },
+    };
   }
   controller.signal.addEventListener("abort", () => {
-    if (timer !== null) window.clearInterval(timer);
+    if (timer !== null) window.clearTimeout(timer);
   }, { once: true });
 
   try {
@@ -941,7 +980,9 @@ async function startBufferedLiveStream(job, canvas, tile, stateText) {
     if (!response.ok || !response.body) throw new Error(`stream returned ${response.status}`);
     const requestedFps = Math.max(1, Number.parseFloat(els.livePreviewFpsInput.value) || 4);
     const negotiatedFps = Number.parseFloat(response.headers.get("X-Stream-FPS"));
-    startPlaybackTimer(Number.isFinite(negotiatedFps) && negotiatedFps > 0 ? negotiatedFps : requestedFps);
+    const playback = startPlaybackTimer(
+      Number.isFinite(negotiatedFps) && negotiatedFps > 0 ? negotiatedFps : requestedFps,
+    );
     const reader = response.body.getReader();
     let pending = new Uint8Array(0);
     const headerMarker = new Uint8Array([13, 10, 13, 10]);
@@ -965,6 +1006,7 @@ async function startBufferedLiveStream(job, canvas, tile, stateText) {
         const payloadStart = headerEnd + headerMarker.length;
         if (pending.length < payloadStart + length + 2) break;
         frames.push(new Blob([pending.slice(payloadStart, payloadStart + length)], { type: "image/jpeg" }));
+        playback.trim();
         pending = pending.slice(payloadStart + length + 2);
       }
     }
