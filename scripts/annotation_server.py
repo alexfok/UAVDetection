@@ -916,8 +916,11 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         capture_worker = None
         detection_worker: AsyncDetectionWorker | None = None
         latest_frame_token = 0
-        playback_started_at = 0.0
         source_fps = max(0.0, float(cap.get(cv2.CAP_PROP_FPS))) if source.kind == "video" else 0.0
+        if source_fps > 0:
+            # File demos should be visually steady.  Never emit them faster than
+            # either the requested preview rate or their encoded frame rate.
+            preview_interval = stable_video_preview_interval(preview_fps, source_fps)
         use_capture_worker = source.kind in {"camera", "rtsp", "stream"}
         if use_capture_worker:
             capture_worker = LatestFrameCapture(
@@ -947,19 +950,6 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                         time.sleep(0.01)
                         continue
                 else:
-                    if source.kind == "video" and source_fps > 0:
-                        if playback_started_at <= 0:
-                            playback_started_at = last_frame_at
-                        frame_index, source_available = advance_video_capture_to_realtime(
-                            cap,
-                            frame_index,
-                            source_fps,
-                            playback_started_at,
-                            last_frame_at,
-                        )
-                        if not source_available:
-                            stop_reason = "source_exhausted"
-                            break
                     ok, frame = cap.read()
                     if not ok or frame is None:
                         stop_reason = "source_exhausted"
@@ -1697,20 +1687,10 @@ def resize_frame(frame, max_width: int, max_height: int):
     return cv2.resize(frame, new_size, interpolation=cv2.INTER_AREA)
 
 
-def advance_video_capture_to_realtime(
-    cap: object,
-    frames_consumed: int,
-    source_fps: float,
-    playback_started_at: float,
-    now: float,
-) -> tuple[int, bool]:
-    """Drop undisplayed file frames so wall-clock playback matches source time."""
-    target_frame = max(0, int(max(0.0, now - playback_started_at) * source_fps))
-    while frames_consumed < target_frame:
-        if not cap.grab():
-            return frames_consumed, False
-        frames_consumed += 1
-    return frames_consumed, True
+def stable_video_preview_interval(preview_fps: float, source_fps: float) -> float:
+    """Return a fixed file-preview cadence without catch-up frame dropping."""
+    effective_fps = min(max(0.1, preview_fps), max(0.1, source_fps))
+    return 1.0 / effective_fps
 
 
 class LatestFrameCapture:
@@ -2283,17 +2263,27 @@ class StreamRecorder:
         self.current_size: tuple[int, int] | None = None
         self.frames_in_segment = 0
         self.segment_started_at = 0.0
+        self.last_frame = None
         self.completed_paths: list[Path] = []
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def write(self, frame) -> None:
+        now = time.monotonic()
         height, width = frame.shape[:2]
         frame_size = (width, height)
         if self.writer is None or self.current_size != frame_size or self.should_rollover_before_write():
-            self.open_segment(frame_size)
+            self.open_segment(frame_size, now)
 
+        frames_due = recording_frames_due(self.frames_in_segment, self.fps, self.segment_started_at, now)
+        if frames_due <= 0:
+            self.last_frame = frame.copy()
+            return
+        for _ in range(max(0, frames_due - 1)):
+            self.writer.write(self.last_frame if self.last_frame is not None else frame)
+            self.frames_in_segment += 1
         self.writer.write(frame)
         self.frames_in_segment += 1
+        self.last_frame = frame.copy()
         if self.current_path and self.current_path.exists() and self.current_path.stat().st_size >= self.rollover_bytes:
             self.release_current()
 
@@ -2320,7 +2310,7 @@ class StreamRecorder:
             return False
         return current_bytes + max(average_frame_bytes * 2, 512 * 1024) >= self.max_bytes
 
-    def open_segment(self, frame_size: tuple[int, int]) -> None:
+    def open_segment(self, frame_size: tuple[int, int], now: float | None = None) -> None:
         self.release_current()
 
         self.segment_index += 1
@@ -2345,7 +2335,7 @@ class StreamRecorder:
         self.current_path = path
         self.current_size = frame_size
         self.frames_in_segment = 0
-        self.segment_started_at = time.monotonic()
+        self.segment_started_at = time.monotonic() if now is None else now
 
     def try_open_writer(self, suffix: str, codec: str, frame_size: tuple[int, int]):
         import cv2
@@ -2378,6 +2368,7 @@ class StreamRecorder:
         self.current_size = None
         self.frames_in_segment = 0
         self.segment_started_at = 0.0
+        self.last_frame = None
 
     def next_segment_path(self, suffix: str) -> Path:
         base = self.stamp if self.segment_index == 1 else f"{self.stamp}_{self.segment_index:02d}"
@@ -2387,6 +2378,14 @@ class StreamRecorder:
             candidate = self.output_dir / f"{base}_{collision}{suffix}"
             collision += 1
         return candidate
+
+
+def recording_frames_due(frames_written: int, fps: float, started_at: float, now: float) -> int:
+    """Keep fixed-rate recordings aligned to wall time by filling missed slots."""
+    if frames_written <= 0:
+        return 1
+    target_frames = int(max(0.0, now - started_at) * max(1.0, fps)) + 1
+    return max(0, target_frames - frames_written)
 
 
 @dataclass

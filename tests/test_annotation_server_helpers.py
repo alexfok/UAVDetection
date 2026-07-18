@@ -10,7 +10,6 @@ from pathlib import Path
 
 from scripts.annotation_server import (
     AsyncDetectionWorker,
-    advance_video_capture_to_realtime,
     annotation_split_stats,
     parse_bool,
     parse_float,
@@ -18,34 +17,24 @@ from scripts.annotation_server import (
     query_value,
     raw_data_stats,
     read_recent_live_events,
+    recording_frames_due,
     remove_live_event_rows,
     safe_name,
+    stable_video_preview_interval,
     upsert_manifest,
     yolo_label_text,
 )
 
 
 class AnnotationServerHelperTests(unittest.TestCase):
-    def test_video_capture_drops_frames_to_match_wall_clock(self) -> None:
-        class FakeCapture:
-            def __init__(self) -> None:
-                self.grabbed = 0
+    def test_video_preview_uses_steady_slower_cadence(self) -> None:
+        self.assertAlmostEqual(stable_video_preview_interval(12.0, 16.0), 1.0 / 12.0)
+        self.assertAlmostEqual(stable_video_preview_interval(30.0, 16.0), 1.0 / 16.0)
 
-            def grab(self) -> bool:
-                self.grabbed += 1
-                return True
-
-        capture = FakeCapture()
-        consumed, available = advance_video_capture_to_realtime(
-            capture,
-            frames_consumed=0,
-            source_fps=16.0,
-            playback_started_at=100.0,
-            now=100.5,
-        )
-        self.assertTrue(available)
-        self.assertEqual(consumed, 8)
-        self.assertEqual(capture.grabbed, 8)
+    def test_recording_fills_wall_clock_frame_slots(self) -> None:
+        self.assertEqual(recording_frames_due(0, 12.0, 100.0, 100.0), 1)
+        self.assertEqual(recording_frames_due(6, 12.0, 100.0, 101.0), 7)
+        self.assertEqual(recording_frames_due(13, 12.0, 100.0, 101.0), 0)
 
     def test_async_detection_does_not_block_or_queue_stale_frames(self) -> None:
         class BlockingDetector:
