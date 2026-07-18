@@ -968,10 +968,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                     alert = last_alert
                     detector_status = " | detector error" if detector_state.get("error") else " | loading detector"
                 else:
-                    if source.is_image or source.kind == "video":
-                        # File demos favor visual correctness: infer on the exact
-                        # frame being drawn so a late result is never painted on
-                        # a newer frame after the drone has moved.
+                    if source.is_image:
                         detections = detector.detect(frame)
                         detection_ran = True
                         last_detection_at = time.monotonic()
@@ -979,6 +976,21 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                         last_tracks = tracker.update(detections, last_detection_at)
                         last_alert = alert_manager.update(last_tracks, last_detection_at)
                         self.server.voice_warning.update(last_alert.active, last_detection_at, voice_source_id)
+                    elif source.kind == "video":
+                        # File demos infer synchronously at the configured rate.
+                        # Results therefore belong to this exact displayed frame
+                        # instead of arriving late and being painted on a newer one.
+                        detection_due = last_detection_at <= 0 or time.monotonic() - last_detection_at >= detection_interval
+                        if frame_skip and frame_index % (frame_skip + 1) != 1:
+                            detection_due = False
+                        if detection_due:
+                            detections = detector.detect(frame)
+                            detection_ran = True
+                            last_detection_at = time.monotonic()
+                            detection_frame_index = frame_index
+                            last_tracks = tracker.update(detections, last_detection_at)
+                            last_alert = alert_manager.update(last_tracks, last_detection_at)
+                            self.server.voice_warning.update(last_alert.active, last_detection_at, voice_source_id)
                     else:
                         if detection_worker is None:
                             detection_worker = AsyncDetectionWorker(detector)
