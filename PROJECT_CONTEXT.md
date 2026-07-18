@@ -365,6 +365,7 @@ Annotation workflow:
 4. Draw drone boxes.
 5. Use `Save Boxes` for positives.
 6. Use `Save Negative` for reviewed frames/images with no drone.
+7. Keyboard shortcuts: `S` saves boxes and `A` saves a negative frame; `0` remains available as a legacy negative shortcut. Shortcuts are ignored while typing in an input, select, or text area.
 
 ## Common Commands
 

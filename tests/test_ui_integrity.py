@@ -161,6 +161,20 @@ class UiIntegrityTests(unittest.TestCase):
         offenders = sorted(button_id for button_id, button_type in parser.buttons.items() if button_type != "button")
         self.assertEqual(offenders, [])
 
+    def test_annotation_save_buttons_expose_shortcut_tooltips(self) -> None:
+        parser = parse_index()
+        save_attrs = parser.attrs_by_id["saveButton"]
+        negative_attrs = parser.attrs_by_id["negativeButton"]
+        self.assertEqual(save_attrs.get("aria-keyshortcuts"), "S")
+        self.assertEqual(negative_attrs.get("aria-keyshortcuts"), "A 0")
+        self.assertIn("(S)", save_attrs.get("title", ""))
+        self.assertIn("A; 0 also works", negative_attrs.get("title", ""))
+
+    def test_annotation_save_shortcuts_match_tooltips(self) -> None:
+        app = APP_PATH.read_text(encoding="utf-8")
+        self.assertIn('return key === "s" || code === "KeyS";', app)
+        self.assertIn('return key === "a" || code === "KeyA" || key === "0"', app)
+
     def test_app_get_element_ids_match_static_dom_except_known_optional(self) -> None:
         html_ids = set(parse_index().ids)
         app = APP_PATH.read_text(encoding="utf-8")

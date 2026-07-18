@@ -42,6 +42,7 @@ const state = {
   debugSessionId: "",
   debugTrackingReady: false,
   savingAnnotation: false,
+  activeDrawingSurface: null,
 };
 
 const UI_LAYOUT_STORAGE_KEY = "uavUiLayout";
@@ -248,7 +249,7 @@ function bindEvents() {
   els.captureButton.addEventListener("click", captureCurrentFrame);
   els.videoButton.addEventListener("click", showVideo);
   els.playButton.addEventListener("click", playVideo);
-  els.pauseButton.addEventListener("click", () => els.video.pause());
+  els.pauseButton.addEventListener("click", pauseVideo);
   els.backButton.addEventListener("click", () => seekVideo(-1));
   els.forwardButton.addEventListener("click", () => seekVideo(1));
   els.liveCameraSelect.addEventListener("change", onLiveCameraChanged);
@@ -294,6 +295,10 @@ function bindEvents() {
   els.liveImagePreview.addEventListener("error", () => setLiveStatus("Image preview unavailable"));
   els.video.addEventListener("error", () => setStatus("Browser cannot play this video codec. Convert to H.264 MP4 or use screenshots/images."));
   els.video.addEventListener("loadedmetadata", () => setStatus(`Video ready (${formatTime(els.video.duration)})`));
+  els.video.addEventListener("pointerdown", onVideoPointerDown);
+  els.video.addEventListener("pointermove", onVideoPointerMove);
+  els.video.addEventListener("pointerup", onVideoPointerUp);
+  els.video.addEventListener("pointercancel", onVideoPointerCancel);
   els.saveButton.addEventListener("click", () => saveAnnotation(false));
   els.negativeButton.addEventListener("click", () => saveAnnotation(true));
   els.undoButton.addEventListener("click", () => {
@@ -314,7 +319,7 @@ function bindEvents() {
     draw();
     applyWorkspaceGrid();
   });
-  window.addEventListener("keydown", onKeyDown);
+  window.addEventListener("keydown", onKeyDown, { capture: true });
   bindDebugActivityTracking();
 }
 
@@ -1715,15 +1720,16 @@ function loadImage(item) {
   els.image.src = url;
 }
 
-function captureCurrentFrame() {
-  if (!state.current) return;
+function captureCurrentFrame(options = {}) {
+  if (!state.current) return false;
   if (state.current.kind === "image") {
     draw();
-    return;
+    return true;
   }
   if (!els.video.videoWidth || !els.video.videoHeight) {
     setStatus("Video frame not ready");
-    return;
+    showNotification("Video frame not ready", "error", 4000);
+    return false;
   }
   state.baseCanvas.width = els.video.videoWidth;
   state.baseCanvas.height = els.video.videoHeight;
@@ -1734,9 +1740,18 @@ function captureCurrentFrame() {
   els.video.pause();
   els.video.style.display = "none";
   els.canvas.style.display = "block";
-  state.boxes = [];
+  if (options.resetBoxes !== false) {
+    state.boxes = [];
+  }
   draw();
   setStatus(`Captured ${formatTime(els.video.currentTime)}`);
+  trackUiActivity("annotation_frame_captured", {
+    source_path: state.current.path,
+    media_kind: state.current.kind,
+    frame_time: state.frameTime,
+    trigger: options.trigger || "manual",
+  });
+  return true;
 }
 
 function showVideo() {
@@ -1751,9 +1766,30 @@ async function playVideo() {
   showVideo();
   try {
     await els.video.play();
+    setStatus("Video playing");
   } catch (_error) {
     setStatus("Click inside the video area, then press Play again.");
   }
+}
+
+function pauseVideo() {
+  if (!state.current || state.current.kind !== "video") return;
+  els.video.pause();
+  setStatus("Video paused");
+}
+
+async function toggleVideoPlayback() {
+  if (!state.current || state.current.kind !== "video") return;
+  if (els.video.style.display === "none" || els.video.paused) {
+    await playVideo();
+  } else {
+    pauseVideo();
+  }
+  trackUiActivity("annotation_playback_toggled", {
+    source_path: state.current.path,
+    paused: els.video.paused,
+    frame_time: els.video.currentTime,
+  });
 }
 
 function seekVideo(deltaSeconds) {
@@ -1808,9 +1844,7 @@ function onPointerDown(event) {
   if (!state.naturalWidth) return;
   event.preventDefault();
   els.canvas.setPointerCapture(event.pointerId);
-  state.drawing = true;
-  state.start = eventToImagePoint(event);
-  state.cursor = state.start;
+  startDrawing(eventToImagePoint(event), "canvas");
 }
 
 function onPointerMove(event) {
@@ -1823,32 +1857,107 @@ function onPointerMove(event) {
 function onPointerUp(event) {
   if (!state.drawing || !state.start) return;
   event.preventDefault();
+  finishDrawing(eventToImagePoint(event));
+  if (els.canvas.hasPointerCapture(event.pointerId)) {
+    els.canvas.releasePointerCapture(event.pointerId);
+  }
+}
+
+function onVideoPointerDown(event) {
+  if (!state.current || state.current.kind !== "video" || event.button !== 0) return;
+  if (isLikelyNativeVideoControlClick(event)) return;
+  if (!els.video.videoWidth || !els.video.videoHeight) return;
+  const point = eventToImagePointFromElement(event, els.video, els.video.videoWidth, els.video.videoHeight);
+  event.preventDefault();
+  els.video.setPointerCapture(event.pointerId);
+  if (!captureCurrentFrame({ trigger: "video_pointer" })) return;
+  startDrawing(point, "video");
+}
+
+function onVideoPointerMove(event) {
+  if (!state.drawing || state.activeDrawingSurface !== "video") return;
+  event.preventDefault();
   state.cursor = eventToImagePoint(event);
+  draw();
+}
+
+function onVideoPointerUp(event) {
+  if (!state.drawing || state.activeDrawingSurface !== "video") return;
+  event.preventDefault();
+  finishDrawing(eventToImagePoint(event));
+  if (els.video.hasPointerCapture(event.pointerId)) {
+    els.video.releasePointerCapture(event.pointerId);
+  }
+}
+
+function onVideoPointerCancel(event) {
+  if (els.video.hasPointerCapture(event.pointerId)) {
+    els.video.releasePointerCapture(event.pointerId);
+  }
+  cancelDrawing();
+}
+
+function startDrawing(point, surface) {
+  state.drawing = true;
+  state.activeDrawingSurface = surface;
+  state.start = point;
+  state.cursor = point;
+  draw();
+}
+
+function finishDrawing(point) {
+  state.cursor = point;
   const box = normaliseBox({ x1: state.start.x, y1: state.start.y, x2: state.cursor.x, y2: state.cursor.y });
   if (box.x2 - box.x1 > 3 && box.y2 - box.y1 > 3) {
     state.boxes.push(box);
   }
-  state.drawing = false;
-  state.start = null;
-  state.cursor = null;
-  if (els.canvas.hasPointerCapture(event.pointerId)) {
-    els.canvas.releasePointerCapture(event.pointerId);
-  }
+  cancelDrawing();
   draw();
 }
 
+function cancelDrawing() {
+  state.drawing = false;
+  state.activeDrawingSurface = null;
+  state.start = null;
+  state.cursor = null;
+}
+
 function eventToImagePoint(event) {
+  return eventToImagePointFromElement(event, els.canvas, els.canvas.width, els.canvas.height);
+}
+
+function eventToImagePointFromElement(event, element, elementWidth, elementHeight) {
+  if (!state.naturalWidth && (!elementWidth || !elementHeight)) return { x: 0, y: 0 };
   const rect = els.canvas.getBoundingClientRect();
-  const canvasX = (event.clientX - rect.left) * (els.canvas.width / rect.width);
-  const canvasY = (event.clientY - rect.top) * (els.canvas.height / rect.height);
-  const x = clamp(canvasX * (state.naturalWidth / els.canvas.width), 0, state.naturalWidth - 1);
-  const y = clamp(canvasY * (state.naturalHeight / els.canvas.height), 0, state.naturalHeight - 1);
+  const targetRect = element === els.canvas ? rect : element.getBoundingClientRect();
+  const renderedWidth = targetRect.width || elementWidth || 1;
+  const renderedHeight = targetRect.height || elementHeight || 1;
+  const sourceWidth = state.naturalWidth || elementWidth;
+  const sourceHeight = state.naturalHeight || elementHeight;
+  const elementX = (event.clientX - targetRect.left) * (elementWidth / renderedWidth);
+  const elementY = (event.clientY - targetRect.top) * (elementHeight / renderedHeight);
+  const x = clamp(elementX * (sourceWidth / elementWidth), 0, sourceWidth - 1);
+  const y = clamp(elementY * (sourceHeight / elementHeight), 0, sourceHeight - 1);
   return { x, y };
+}
+
+function isLikelyNativeVideoControlClick(event) {
+  const rect = els.video.getBoundingClientRect();
+  const y = event.clientY - rect.top;
+  const controlsHeight = Math.min(56, rect.height * 0.28);
+  return y >= rect.height - controlsHeight;
+}
+
+function ensureAnnotationFrameCaptured(trigger) {
+  if (!state.current) return false;
+  if (state.current.kind === "image") return Boolean(state.naturalWidth && state.naturalHeight);
+  if (els.canvas.style.display !== "none" && state.naturalWidth && state.naturalHeight) return true;
+  return captureCurrentFrame({ trigger });
 }
 
 async function saveAnnotation(negative) {
   if (state.savingAnnotation) return;
-  if (!state.current || !state.naturalWidth || !state.naturalHeight) {
+  if (!state.current || !ensureAnnotationFrameCaptured(negative ? "save_negative" : "save_boxes")) {
     const message = "Capture or load an image first";
     setStatus(message);
     showNotification(message, "error", 5000);
@@ -1927,15 +2036,64 @@ async function saveAnnotation(negative) {
 }
 
 function onKeyDown(event) {
-  if (event.target && ["INPUT", "SELECT"].includes(event.target.tagName)) return;
-  if (event.key === "ArrowRight") selectRelative(1);
-  if (event.key === "ArrowLeft") selectRelative(-1);
+  if (shouldIgnoreShortcut(event)) return;
+  if (event.ctrlKey || event.metaKey || event.altKey) return;
+  const key = event.key.toLowerCase();
+  const code = event.code;
+  if (event.key === " " || event.code === "Space") {
+    if (event.repeat) return;
+    event.preventDefault();
+    event.stopPropagation();
+    toggleVideoPlayback();
+    return;
+  }
+  if (event.key === "ArrowRight") {
+    event.preventDefault();
+    event.stopPropagation();
+    selectRelative(1);
+    return;
+  }
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    event.stopPropagation();
+    selectRelative(-1);
+    return;
+  }
   if (event.key === "Backspace") {
+    event.preventDefault();
+    event.stopPropagation();
     state.boxes.pop();
     draw();
+    return;
   }
-  if (event.key === "s") saveAnnotation(false);
-  if (event.key === "0") saveAnnotation(true);
+  if (isPositiveSaveShortcut(key, code)) {
+    if (event.repeat) return;
+    event.preventDefault();
+    event.stopPropagation();
+    saveAnnotation(false);
+    return;
+  }
+  if (isNegativeSaveShortcut(key, code)) {
+    if (event.repeat) return;
+    event.preventDefault();
+    event.stopPropagation();
+    saveAnnotation(true);
+  }
+}
+
+function isPositiveSaveShortcut(key, code) {
+  return key === "s" || code === "KeyS";
+}
+
+function isNegativeSaveShortcut(key, code) {
+  return key === "a" || code === "KeyA" || key === "0" || code === "Digit0" || code === "Numpad0";
+}
+
+function shouldIgnoreShortcut(event) {
+  const target = event.target;
+  if (!target) return false;
+  if (target.isContentEditable) return true;
+  return ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName);
 }
 
 async function getJson(url) {

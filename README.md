@@ -524,7 +524,7 @@ If `8765` is already busy, either open the URL above to use the existing server,
 python3 scripts/annotation_server.py --port 8766
 ```
 
-The web UI scans a local folder for movies/images. For videos, play to the desired moment, click `Capture`, draw boxes on the captured frame, then `Save Boxes`. For images, draw directly and save. `Save Negative` stores the current image/frame with an empty YOLO label file.
+The web UI scans a local folder for movies/images. For videos, play to the desired moment, click `Capture`, draw boxes on the captured frame, then `Save Boxes`. For images, draw directly and save. `Save Negative` stores the current image/frame with an empty YOLO label file. When focus is not inside an input field, use `S` to save boxes and `A` to save a negative frame; `0` remains available as a legacy negative shortcut. Hover over either save button to see its shortcuts.
 
 The same server also has a `Live Detection` tab for source testing and live monitoring. It can stream annotated detections from named cameras, direct RTSP URLs, USB/embedded cameras, video files, or image files:
 
