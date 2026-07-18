@@ -33,6 +33,7 @@ const state = {
   liveRunning: false,
   liveRecording: false,
   liveStreamJobs: [],
+  liveFilePlaybackStops: [],
   liveRecordingChecks: new Map(),
   liveRecordingPollTimer: null,
   liveVoicePollTimer: null,
@@ -789,6 +790,8 @@ function liveStreamJobs() {
     return mediaItems.map((item) => ({
       key: `media:${item.path}`,
       label: `${item.relative || item.name} · ${item.kind}`,
+      kind: item.kind,
+      mediaPath: item.path,
       params: { source: item.path },
     }));
   }
@@ -872,6 +875,23 @@ function renderLiveStreamGrid(jobs) {
     stateText.textContent = "Starting";
     header.append(title, stateText);
 
+    if (job.kind === "video" && !els.liveRecordInput.checked) {
+      const playback = document.createElement("div");
+      playback.className = "liveFilePlayback";
+      const video = document.createElement("video");
+      video.className = "liveStreamImage";
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = "auto";
+      const overlay = document.createElement("canvas");
+      overlay.className = "liveDetectionOverlay";
+      playback.append(video, overlay);
+      startAnalyzedFilePlayback(job, video, overlay, tile, stateText);
+      tile.append(header, playback);
+      els.liveStreamGrid.appendChild(tile);
+      return;
+    }
+
     const image = document.createElement("img");
     image.className = "liveStreamImage";
     image.alt = job.label || "Live source";
@@ -896,11 +916,146 @@ function renderLiveStreamGrid(jobs) {
 }
 
 function clearLiveStreamGrid() {
+  state.liveFilePlaybackStops.forEach((stop) => stop());
+  state.liveFilePlaybackStops = [];
   [...els.liveStreamGrid.querySelectorAll("img")].forEach((image) => image.removeAttribute("src"));
   els.liveStreamGrid.innerHTML = "";
   els.liveStreamGrid.style.display = "none";
   els.liveStreamGrid.removeAttribute("data-count");
   els.liveStreamGrid.classList.remove("many");
+}
+
+async function startAnalyzedFilePlayback(job, video, overlay, tile, stateText) {
+  let active = true;
+  let frameCallbackId = null;
+  const stop = () => {
+    active = false;
+    if (frameCallbackId !== null && video.cancelVideoFrameCallback) {
+      video.cancelVideoFrameCallback(frameCallbackId);
+    }
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+  };
+  state.liveFilePlaybackStops.push(stop);
+
+  try {
+    stateText.textContent = "Analyzing";
+    const analysis = await getJson(liveFileAnalysisUrl(job));
+    if (!active) return;
+    const samples = Array.isArray(analysis.samples) ? analysis.samples : [];
+    const fps = Math.max(0.1, Number(analysis.fps) || 1);
+    const detectionStep = Math.max(1, Number(analysis.detection_step) || 1);
+    overlay.width = Math.max(1, Number(analysis.width) || 1920);
+    overlay.height = Math.max(1, Number(analysis.height) || 1080);
+    video.src = mediaUrl(job.mediaPath);
+
+    const renderFrame = (_now, metadata) => {
+      if (!active) return;
+      const mediaTime = Number(metadata && metadata.mediaTime);
+      const currentTime = Number.isFinite(mediaTime) ? mediaTime : video.currentTime;
+      const frame = currentTime * fps + 1;
+      const detections = interpolatedFileDetections(samples, frame, detectionStep);
+      drawFileDetectionOverlay(overlay, detections);
+      updateFileVoiceState(job, detections.length > 0);
+      if (video.requestVideoFrameCallback && !video.ended) {
+        frameCallbackId = video.requestVideoFrameCallback(renderFrame);
+      }
+    };
+    video.addEventListener("loadeddata", () => {
+      if (!active) return;
+      tile.classList.remove("loading");
+      stateText.textContent = "PLAYING";
+      if (state.liveRunning) setLiveStatus(`${job.label || "Source"} playing with aligned detections`);
+      video.play().catch(() => {
+        stateText.textContent = "Click to play";
+        video.controls = true;
+      });
+      if (video.requestVideoFrameCallback) {
+        frameCallbackId = video.requestVideoFrameCallback(renderFrame);
+      }
+    }, { once: true });
+    if (!video.requestVideoFrameCallback) {
+      video.addEventListener("timeupdate", () => renderFrame(null, { mediaTime: video.currentTime }));
+    }
+    video.addEventListener("ended", () => {
+      stateText.textContent = "COMPLETED";
+      updateFileVoiceState(job, false, true);
+    }, { once: true });
+  } catch (_error) {
+    if (!active) return;
+    tile.classList.remove("loading");
+    stateText.textContent = "Unavailable";
+    if (state.liveRunning) setLiveStatus(`${job.label || "Source"} analysis failed`);
+  }
+}
+
+function liveFileAnalysisUrl(job) {
+  return liveStreamUrl(job).replace("/api/live/stream?", "/api/live/file-analysis?");
+}
+
+function interpolatedFileDetections(samples, frame, detectionStep) {
+  if (!samples.length) return [];
+  let low = 0;
+  let high = samples.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (Number(samples[middle].frame) <= frame) low = middle + 1;
+    else high = middle;
+  }
+  const previous = samples[Math.max(0, low - 1)];
+  const next = samples[Math.min(samples.length - 1, low)];
+  const previousFrame = Number(previous.frame);
+  const nextFrame = Number(next.frame);
+  const previousDetections = Array.isArray(previous.detections) ? previous.detections : [];
+  const nextDetections = Array.isArray(next.detections) ? next.detections : [];
+  if (!previousDetections.length || frame - previousFrame > detectionStep) return [];
+  if (!nextDetections.length || nextFrame <= previousFrame) return previousDetections;
+  const alpha = Math.max(0, Math.min(1, (frame - previousFrame) / (nextFrame - previousFrame)));
+  return previousDetections.map((detection, index) => {
+    const following = nextDetections[index];
+    if (!following || !Array.isArray(following.bbox)) return detection;
+    return {
+      ...detection,
+      confidence: Number(detection.confidence) * (1 - alpha) + Number(following.confidence) * alpha,
+      bbox: detection.bbox.map((value, coordinate) => (
+        Number(value) * (1 - alpha) + Number(following.bbox[coordinate]) * alpha
+      )),
+    };
+  });
+}
+
+function drawFileDetectionOverlay(canvas, detections) {
+  const context = canvas.getContext("2d");
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.lineWidth = Math.max(2, canvas.width / 640);
+  context.font = `${Math.max(16, Math.round(canvas.width / 60))}px sans-serif`;
+  detections.forEach((detection) => {
+    const [x1, y1, x2, y2] = detection.bbox.map(Number);
+    const label = `${detection.label || "drone"} ${Number(detection.confidence || 0).toFixed(2)}`;
+    const textWidth = context.measureText(label).width;
+    const textHeight = Math.max(20, canvas.height / 32);
+    context.strokeStyle = "#ffbf00";
+    context.fillStyle = "#ffbf00";
+    context.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    context.fillRect(x1, Math.max(0, y1 - textHeight), textWidth + 12, textHeight);
+    context.fillStyle = "#ffffff";
+    context.fillText(label, x1 + 6, Math.max(16, y1 - 5));
+  });
+}
+
+function updateFileVoiceState(job, detected, forceClear = false) {
+  const runId = String(job.clientRunId || "");
+  if (!runId) return;
+  if (detected) {
+    job.lastFileDetectionAt = performance.now();
+    const wasActive = state.liveVoiceActiveRunIds.size > 0;
+    state.liveVoiceActiveRunIds.add(runId);
+    if (!wasActive) maybePlayLiveVoiceWarning();
+    return;
+  }
+  if (!forceClear && job.lastFileDetectionAt && performance.now() - job.lastFileDetectionAt < 1000) return;
+  state.liveVoiceActiveRunIds.delete(runId);
 }
 
 function liveRecordSuffix(job) {

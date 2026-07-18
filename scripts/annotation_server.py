@@ -410,6 +410,10 @@ class AnnotationHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             self.stream_live_detection(query)
             return
+        if parsed.path == "/api/live/file-analysis":
+            query = parse_qs(parsed.query)
+            self.send_live_file_analysis(query)
+            return
         if parsed.path == "/api/scan":
             query = parse_qs(parsed.query)
             folder = query.get("folder", [str(self.server.default_folder)])[0]
@@ -905,42 +909,19 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         file_detection_results: dict[int, list[object]] | None = None
         if source.kind == "video" and detector_state.get("detector") is not None:
             try:
-                source_path = Path(str(source.capture_source))
-                source_stat = source_path.stat()
-                file_cache_key = (
-                    str(source_path.resolve()),
-                    source_stat.st_size,
-                    source_stat.st_mtime_ns,
-                    detector_cache_key(detector_config),
-                    round(detect_fps, 6),
+                file_detection_results = cached_video_detections(
+                    self.server,
+                    cap,
+                    Path(str(source.capture_source)),
+                    source_fps,
+                    detect_fps,
                     frame_skip,
                     max_width,
                     max_height,
+                    detector_config,
+                    detector_state["detector"],
+                    cv2,
                 )
-                with self.server.video_detection_cache_lock:
-                    file_detection_results = self.server.video_detection_cache.get(file_cache_key)
-                if file_detection_results is None:
-                    file_detection_results = {}
-                    detector = detector_state["detector"]
-                    detection_step = max(1, round(source_fps / detect_fps)) if source_fps > 0 else 1
-                    analysis_index = 0
-                    while True:
-                        ok, analysis_frame = cap.read()
-                        if not ok or analysis_frame is None:
-                            break
-                        analysis_index += 1
-                        if frame_skip and analysis_index % (frame_skip + 1) != 1:
-                            continue
-                        if analysis_index != 1 and (analysis_index - 1) % detection_step != 0:
-                            continue
-                        analysis_frame = resize_frame(analysis_frame, max_width, max_height)
-                        file_detection_results[analysis_index] = list(detector.detect(analysis_frame) or [])
-                    if not cap.set(cv2.CAP_PROP_POS_FRAMES, 0):
-                        raise RuntimeError("unable to rewind video after detection analysis")
-                    with self.server.video_detection_cache_lock:
-                        if len(self.server.video_detection_cache) >= 8:
-                            self.server.video_detection_cache.pop(next(iter(self.server.video_detection_cache)))
-                        self.server.video_detection_cache[file_cache_key] = file_detection_results
             except Exception as exc:
                 file_detection_results = None
                 event_logger.log_error(f"frame-aligned video analysis unavailable: {exc}")
@@ -1131,6 +1112,100 @@ class AnnotationHandler(BaseHTTPRequestHandler):
             if transition is not None:
                 event_logger.log_presence_transition(transition)
             event_logger.log_stop(stop_reason, frame_index)
+
+    def send_live_file_analysis(self, query: dict[str, list[str]]) -> None:
+        source_value = query_value(query, "source", "")
+        model_path = resolve_user_path(query_value(query, "model", str(self.server.live_model)))
+        confidence = min(1.0, max(0.01, parse_float(query_value(query, "conf", "0.3"), 0.3)))
+        iou = min(1.0, max(0.01, parse_float(query_value(query, "iou", "0.45"), 0.45)))
+        detect_fps = max(0.1, parse_float(query_value(query, "detect_fps", "2"), 2.0))
+        frame_skip = max(0, parse_int(query_value(query, "frame_skip", "0")))
+        image_size = max(160, parse_int(query_value(query, "imgsz", "960")))
+        max_width = max(0, parse_int(query_value(query, "max_width", "1920")))
+        max_height = max(0, parse_int(query_value(query, "max_height", "1080")))
+        device = normalise_device_value(query_value(query, "device", ""))
+
+        cap = None
+        try:
+            import cv2
+
+            from app.config import DetectorConfig
+            from app.detector import DroneDetector
+            from app.sources import open_source_capture, resolve_source
+
+            source = resolve_source(source_value, self.server.camera_config)
+            if source.kind != "video":
+                self.send_error(HTTPStatus.BAD_REQUEST, "File analysis requires a video source")
+                return
+            cap = open_source_capture(source)
+            if not cap.isOpened():
+                self.send_error(HTTPStatus.BAD_REQUEST, f"Unable to open source: {source.label}")
+                return
+
+            source_fps = max(0.1, float(cap.get(cv2.CAP_PROP_FPS)))
+            frame_count = max(0, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+            source_width = max(1, int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)))
+            source_height = max(1, int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+            scale = min(
+                max_width / source_width if max_width > 0 else 1.0,
+                max_height / source_height if max_height > 0 else 1.0,
+                1.0,
+            )
+            analysis_width = max(1, int(source_width * scale))
+            analysis_height = max(1, int(source_height * scale))
+            detector_config = DetectorConfig(
+                model_path=str(model_path),
+                confidence_threshold=confidence,
+                iou_threshold=iou,
+                image_size=image_size,
+                device=device,
+            )
+            detector = shared_detector_for(self.server, detector_config, DroneDetector)
+            detections_by_frame = cached_video_detections(
+                self.server,
+                cap,
+                Path(str(source.capture_source)),
+                source_fps,
+                detect_fps,
+                frame_skip,
+                max_width,
+                max_height,
+                detector_config,
+                detector,
+                cv2,
+            )
+            samples = []
+            for frame_index, detections in sorted(detections_by_frame.items()):
+                samples.append(
+                    {
+                        "frame": frame_index,
+                        "detections": [
+                            {
+                                "bbox": list(detection.bbox),
+                                "confidence": round(float(detection.confidence), 6),
+                                "label": str(detection.label),
+                            }
+                            for detection in detections
+                        ],
+                    }
+                )
+            self.send_json(
+                {
+                    "source": str(source.capture_source),
+                    "fps": source_fps,
+                    "frame_count": frame_count,
+                    "duration": frame_count / source_fps if frame_count else 0.0,
+                    "width": analysis_width,
+                    "height": analysis_height,
+                    "detection_step": max(1, round(source_fps / detect_fps)),
+                    "samples": samples,
+                }
+            )
+        except Exception as exc:
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, f"File analysis failed: {exc}")
+        finally:
+            if cap is not None:
+                cap.release()
 
     def send_static(self, path: Path, content_type: str | None = None) -> None:
         try:
@@ -1760,6 +1835,59 @@ def resize_frame(frame, max_width: int, max_height: int):
         return frame
     new_size = (int(width * scale), int(height * scale))
     return cv2.resize(frame, new_size, interpolation=cv2.INTER_AREA)
+
+
+def cached_video_detections(
+    server: AnnotationServer,
+    cap: object,
+    source_path: Path,
+    source_fps: float,
+    detect_fps: float,
+    frame_skip: int,
+    max_width: int,
+    max_height: int,
+    detector_config: object,
+    detector: object,
+    cv2_module: object,
+) -> dict[int, list[object]]:
+    source_stat = source_path.stat()
+    cache_key = (
+        str(source_path.resolve()),
+        source_stat.st_size,
+        source_stat.st_mtime_ns,
+        detector_cache_key(detector_config),
+        round(detect_fps, 6),
+        frame_skip,
+        max_width,
+        max_height,
+    )
+    with server.video_detection_cache_lock:
+        cached = server.video_detection_cache.get(cache_key)
+    if cached is not None:
+        cap.set(cv2_module.CAP_PROP_POS_FRAMES, 0)
+        return cached
+
+    results: dict[int, list[object]] = {}
+    detection_step = max(1, round(source_fps / detect_fps)) if source_fps > 0 else 1
+    frame_index = 0
+    while True:
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            break
+        frame_index += 1
+        if frame_skip and frame_index % (frame_skip + 1) != 1:
+            continue
+        if frame_index != 1 and (frame_index - 1) % detection_step != 0:
+            continue
+        frame = resize_frame(frame, max_width, max_height)
+        results[frame_index] = list(detector.detect(frame) or [])
+    if not cap.set(cv2_module.CAP_PROP_POS_FRAMES, 0):
+        raise RuntimeError("unable to rewind video after detection analysis")
+    with server.video_detection_cache_lock:
+        if len(server.video_detection_cache) >= 8:
+            server.video_detection_cache.pop(next(iter(server.video_detection_cache)))
+        server.video_detection_cache[cache_key] = results
+    return results
 
 
 def stable_video_preview_interval(preview_fps: float, source_fps: float) -> float:

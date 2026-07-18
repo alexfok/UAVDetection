@@ -173,6 +173,23 @@ class UiIntegrityTests(unittest.TestCase):
         self.assertNotIn("startBufferedLiveStream", app)
         self.assertNotIn("createImageBitmap", app)
 
+    def test_prerecorded_detection_uses_video_with_aligned_overlay(self) -> None:
+        app = APP_PATH.read_text(encoding="utf-8")
+        css = CSS_PATH.read_text(encoding="utf-8")
+        for token in [
+            'job.kind === "video"',
+            'document.createElement("video")',
+            "startAnalyzedFilePlayback",
+            '"/api/live/file-analysis?"',
+            "requestVideoFrameCallback",
+            "interpolatedFileDetections",
+            "drawFileDetectionOverlay",
+            "video.src = mediaUrl(job.mediaPath)",
+        ]:
+            self.assertIn(token, app)
+        self.assertIn(".liveFilePlayback", css)
+        self.assertIn(".liveDetectionOverlay", css)
+
     def test_clickable_buttons_declare_type_button(self) -> None:
         parser = parse_index()
         offenders = sorted(button_id for button_id, button_type in parser.buttons.items() if button_type != "button")
