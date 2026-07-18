@@ -1011,7 +1011,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 detector_status = ""
                 detection_ran = False
                 if detector is None:
-                    tracks = last_tracks
+                    tracks = [] if source.kind == "video" and not detection_ran else last_tracks
                     alert = last_alert
                     detector_status = " | detector error" if detector_state.get("error") else " | loading detector"
                 else:
