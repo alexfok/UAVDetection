@@ -33,6 +33,7 @@ const state = {
   liveRunning: false,
   liveRecording: false,
   liveStreamJobs: [],
+  liveStreamControllers: [],
   liveRecordingChecks: new Map(),
   liveRecordingPollTimer: null,
   liveVoicePollTimer: null,
@@ -872,20 +873,11 @@ function renderLiveStreamGrid(jobs) {
     stateText.textContent = "Starting";
     header.append(title, stateText);
 
-    const image = document.createElement("img");
+    const image = document.createElement("canvas");
     image.className = "liveStreamImage";
-    image.alt = "";
-    image.addEventListener("load", () => {
-      tile.classList.remove("loading");
-      stateText.textContent = "LIVE";
-      if (state.liveRunning) setLiveStatus(`${job.label || "Source"} streaming`);
-    });
-    image.addEventListener("error", () => {
-      tile.classList.remove("loading");
-      stateText.textContent = "Unavailable";
-      if (state.liveRunning) setLiveStatus(`${job.label || "Source"} unavailable`);
-    });
-    image.src = liveStreamUrl(job);
+    image.setAttribute("role", "img");
+    image.setAttribute("aria-label", job.label || "Live source");
+    startBufferedLiveStream(job, image, tile, stateText);
 
     tile.append(header, image);
     els.liveStreamGrid.appendChild(tile);
@@ -893,11 +885,100 @@ function renderLiveStreamGrid(jobs) {
 }
 
 function clearLiveStreamGrid() {
-  [...els.liveStreamGrid.querySelectorAll("img")].forEach((image) => image.removeAttribute("src"));
+  state.liveStreamControllers.forEach((controller) => controller.abort());
+  state.liveStreamControllers = [];
   els.liveStreamGrid.innerHTML = "";
   els.liveStreamGrid.style.display = "none";
   els.liveStreamGrid.removeAttribute("data-count");
   els.liveStreamGrid.classList.remove("many");
+}
+
+async function startBufferedLiveStream(job, canvas, tile, stateText) {
+  const controller = new AbortController();
+  state.liveStreamControllers.push(controller);
+  const frames = [];
+  const previewFps = Math.max(1, Number.parseFloat(els.livePreviewFpsInput.value) || 4);
+  const initialBuffer = Math.max(4, Math.round(previewFps * 1.5));
+  let streamEnded = false;
+  let playbackStarted = false;
+  let drawing = false;
+
+  const timer = window.setInterval(async () => {
+    if (controller.signal.aborted || drawing) return;
+    if (!playbackStarted) {
+      if (frames.length < initialBuffer && !streamEnded) return;
+      playbackStarted = frames.length > 0;
+    }
+    const blob = frames.shift();
+    if (!blob) {
+      if (streamEnded) window.clearInterval(timer);
+      return;
+    }
+    drawing = true;
+    try {
+      const bitmap = await createImageBitmap(blob);
+      if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+      }
+      canvas.getContext("2d").drawImage(bitmap, 0, 0);
+      bitmap.close();
+      tile.classList.remove("loading");
+      stateText.textContent = "LIVE";
+      if (state.liveRunning) setLiveStatus(`${job.label || "Source"} streaming`);
+    } finally {
+      drawing = false;
+    }
+  }, 1000 / previewFps);
+  controller.signal.addEventListener("abort", () => window.clearInterval(timer), { once: true });
+
+  try {
+    const response = await fetch(liveStreamUrl(job), { cache: "no-store", signal: controller.signal });
+    if (!response.ok || !response.body) throw new Error(`stream returned ${response.status}`);
+    const reader = response.body.getReader();
+    let pending = new Uint8Array(0);
+    const headerMarker = new Uint8Array([13, 10, 13, 10]);
+    while (!controller.signal.aborted) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const combined = new Uint8Array(pending.length + value.length);
+      combined.set(pending);
+      combined.set(value, pending.length);
+      pending = combined;
+      while (true) {
+        const headerEnd = byteSequenceIndex(pending, headerMarker);
+        if (headerEnd < 0) break;
+        const header = new TextDecoder().decode(pending.slice(0, headerEnd));
+        const match = header.match(/Content-Length:\s*(\d+)/i);
+        if (!match) {
+          pending = pending.slice(headerEnd + headerMarker.length);
+          continue;
+        }
+        const length = Number.parseInt(match[1], 10);
+        const payloadStart = headerEnd + headerMarker.length;
+        if (pending.length < payloadStart + length + 2) break;
+        frames.push(new Blob([pending.slice(payloadStart, payloadStart + length)], { type: "image/jpeg" }));
+        pending = pending.slice(payloadStart + length + 2);
+      }
+    }
+    streamEnded = true;
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    streamEnded = true;
+    tile.classList.remove("loading");
+    stateText.textContent = "Unavailable";
+    if (state.liveRunning) setLiveStatus(`${job.label || "Source"} unavailable`);
+  }
+}
+
+function byteSequenceIndex(haystack, needle) {
+  outer: for (let index = 0; index <= haystack.length - needle.length; index += 1) {
+    for (let offset = 0; offset < needle.length; offset += 1) {
+      if (haystack[index + offset] !== needle[offset]) continue outer;
+    }
+    return index;
+  }
+  return -1;
 }
 
 function liveRecordSuffix(job) {
