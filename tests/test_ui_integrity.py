@@ -165,6 +165,12 @@ class UiIntegrityTests(unittest.TestCase):
         ]:
             self.assertIn(token, css)
 
+    def test_buffered_preview_uses_server_negotiated_fps(self) -> None:
+        app = APP_PATH.read_text(encoding="utf-8")
+        self.assertIn('response.headers.get("X-Stream-FPS")', app)
+        self.assertIn("startPlaybackTimer", app)
+        self.assertIn("previewFps * 1.5", app)
+
     def test_clickable_buttons_declare_type_button(self) -> None:
         parser = parse_index()
         offenders = sorted(button_id for button_id, button_type in parser.buttons.items() if button_type != "button")

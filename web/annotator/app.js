@@ -897,44 +897,51 @@ async function startBufferedLiveStream(job, canvas, tile, stateText) {
   const controller = new AbortController();
   state.liveStreamControllers.push(controller);
   const frames = [];
-  const previewFps = Math.max(1, Number.parseFloat(els.livePreviewFpsInput.value) || 4);
-  const initialBuffer = Math.max(4, Math.round(previewFps * 1.5));
   let streamEnded = false;
   let playbackStarted = false;
   let drawing = false;
+  let timer = null;
 
-  const timer = window.setInterval(async () => {
-    if (controller.signal.aborted || drawing) return;
-    if (!playbackStarted) {
-      if (frames.length < initialBuffer && !streamEnded) return;
-      playbackStarted = frames.length > 0;
-    }
-    const blob = frames.shift();
-    if (!blob) {
-      if (streamEnded) window.clearInterval(timer);
-      return;
-    }
-    drawing = true;
-    try {
-      const bitmap = await createImageBitmap(blob);
-      if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-        canvas.width = bitmap.width;
-        canvas.height = bitmap.height;
+  function startPlaybackTimer(previewFps) {
+    const initialBuffer = Math.max(4, Math.round(previewFps * 1.5));
+    timer = window.setInterval(async () => {
+      if (controller.signal.aborted || drawing) return;
+      if (!playbackStarted) {
+        if (frames.length < initialBuffer && !streamEnded) return;
+        playbackStarted = frames.length > 0;
       }
-      canvas.getContext("2d").drawImage(bitmap, 0, 0);
-      bitmap.close();
-      tile.classList.remove("loading");
-      stateText.textContent = "LIVE";
-      if (state.liveRunning) setLiveStatus(`${job.label || "Source"} streaming`);
-    } finally {
-      drawing = false;
-    }
-  }, 1000 / previewFps);
-  controller.signal.addEventListener("abort", () => window.clearInterval(timer), { once: true });
+      const blob = frames.shift();
+      if (!blob) {
+        if (streamEnded) window.clearInterval(timer);
+        return;
+      }
+      drawing = true;
+      try {
+        const bitmap = await createImageBitmap(blob);
+        if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+          canvas.width = bitmap.width;
+          canvas.height = bitmap.height;
+        }
+        canvas.getContext("2d").drawImage(bitmap, 0, 0);
+        bitmap.close();
+        tile.classList.remove("loading");
+        stateText.textContent = "LIVE";
+        if (state.liveRunning) setLiveStatus(`${job.label || "Source"} streaming`);
+      } finally {
+        drawing = false;
+      }
+    }, 1000 / previewFps);
+  }
+  controller.signal.addEventListener("abort", () => {
+    if (timer !== null) window.clearInterval(timer);
+  }, { once: true });
 
   try {
     const response = await fetch(liveStreamUrl(job), { cache: "no-store", signal: controller.signal });
     if (!response.ok || !response.body) throw new Error(`stream returned ${response.status}`);
+    const requestedFps = Math.max(1, Number.parseFloat(els.livePreviewFpsInput.value) || 4);
+    const negotiatedFps = Number.parseFloat(response.headers.get("X-Stream-FPS"));
+    startPlaybackTimer(Number.isFinite(negotiatedFps) && negotiatedFps > 0 ? negotiatedFps : requestedFps);
     const reader = response.body.getReader();
     let pending = new Uint8Array(0);
     const headerMarker = new Uint8Array([13, 10, 13, 10]);

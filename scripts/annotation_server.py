@@ -817,6 +817,10 @@ class AnnotationHandler(BaseHTTPRequestHandler):
             tracker = SimpleTracker(TrackerConfig(), alert_config.window_seconds)
             alert_manager = AlertManager(alert_config)
             ui = OpenCVUI(UIConfig(show_window=False, draw_all_tracks=True, draw_status_bar=False))
+            source_fps = max(0.0, float(cap.get(cv2.CAP_PROP_FPS))) if source.kind == "video" else 0.0
+            effective_preview_fps = (
+                min(preview_fps, source_fps) if source_fps > 0 else preview_fps
+            )
         except Exception as exc:
             if cap is not None:
                 try:
@@ -831,12 +835,13 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
         self.send_header("Pragma", "no-cache")
         self.send_header("Connection", "close")
+        self.send_header("X-Stream-FPS", f"{effective_preview_fps:.6f}")
         self.end_headers()
 
         fps_meter = StreamFPSMeter()
         frame_index = 0
         failures = 0
-        preview_interval = 1.0 / preview_fps
+        preview_interval = 1.0 / effective_preview_fps
         detection_interval = 1.0 / detect_fps
         last_frame_at = 0.0
         last_detection_at = 0.0
@@ -858,6 +863,8 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 "device": device or "auto",
                 "frame_skip": frame_skip,
                 "preview_fps": preview_fps,
+                "effective_preview_fps": round(effective_preview_fps, 6),
+                "frame_aligned_file_detection": source.kind == "video",
                 "detect_fps": detect_fps,
                 "max_width": max_width,
                 "max_height": max_height,
@@ -916,11 +923,6 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         capture_worker = None
         detection_worker: AsyncDetectionWorker | None = None
         latest_frame_token = 0
-        source_fps = max(0.0, float(cap.get(cv2.CAP_PROP_FPS))) if source.kind == "video" else 0.0
-        if source_fps > 0:
-            # File demos should be visually steady.  Never emit them faster than
-            # either the requested preview rate or their encoded frame rate.
-            preview_interval = stable_video_preview_interval(preview_fps, source_fps)
         use_capture_worker = source.kind in {"camera", "rtsp", "stream"}
         if use_capture_worker:
             capture_worker = LatestFrameCapture(
@@ -966,7 +968,10 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                     alert = last_alert
                     detector_status = " | detector error" if detector_state.get("error") else " | loading detector"
                 else:
-                    if source.is_image:
+                    if source.is_image or source.kind == "video":
+                        # File demos favor visual correctness: infer on the exact
+                        # frame being drawn so a late result is never painted on
+                        # a newer frame after the drone has moved.
                         detections = detector.detect(frame)
                         detection_ran = True
                         last_detection_at = time.monotonic()
