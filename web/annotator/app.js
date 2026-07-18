@@ -35,6 +35,15 @@ const state = {
   liveStreamJobs: [],
   liveRecordingChecks: new Map(),
   liveRecordingPollTimer: null,
+  liveVoicePollTimer: null,
+  liveVoiceRepeatTimer: null,
+  liveVoiceRunIds: new Set(),
+  liveVoiceActiveRunIds: new Set(),
+  liveVoiceSeenEventIds: new Set(),
+  liveVoiceContext: null,
+  liveVoiceBuffers: {},
+  liveVoiceBufferPromise: null,
+  liveVoiceErrorNotified: false,
   liveModelPath: "",
   trainingJob: null,
   diagnosticsJob: null,
@@ -123,6 +132,7 @@ const els = {
   liveDeviceSelect: document.getElementById("liveDeviceSelect"),
   liveRecordInput: document.getElementById("liveRecordInput"),
   liveRecordLabelsInput: document.getElementById("liveRecordLabelsInput"),
+  liveVoiceInput: document.getElementById("liveVoiceInput"),
   liveSnapshotButton: document.getElementById("liveSnapshotButton"),
   liveFullscreenButton: document.getElementById("liveFullscreenButton"),
   liveStartButton: document.getElementById("liveStartButton"),
@@ -677,6 +687,7 @@ function onLiveCustomSourceInput() {
 
 function startLiveDetection() {
   if (state.liveRunning) stopLiveDetection({ restorePreview: false });
+  prepareLiveVoiceAudio();
   const jobs = liveStreamJobs();
   if (!jobs.length) {
     setLiveStatus("Choose a source first");
@@ -693,11 +704,9 @@ function startLiveDetection() {
     detect_fps: els.liveDetectionFpsInput.value,
     imgsz: els.liveImageSizeInput.value,
   });
-  if (recordingRequested) {
-    jobs.forEach((job) => {
-      job.clientRunId = makeClientRunId();
-    });
-  }
+  jobs.forEach((job) => {
+    job.clientRunId = makeClientRunId();
+  });
   hideLiveMediaPreview();
   renderLiveStreamGrid(jobs);
   els.livePlaceholder.style.display = "none";
@@ -707,6 +716,7 @@ function startLiveDetection() {
   els.liveStartButton.disabled = true;
   els.liveRecordInput.disabled = true;
   els.liveRecordLabelsInput.disabled = true;
+  els.liveVoiceInput.disabled = true;
   els.liveTitle.textContent = liveSourceLabel();
   setLiveStatus(state.liveRecording ? "Starting stream and recording..." : "Starting stream...");
   if (state.liveRecording) {
@@ -715,6 +725,7 @@ function startLiveDetection() {
   } else {
     stopRecordingStatusWatch();
   }
+  startLiveVoiceWarnings(jobs);
   window.setTimeout(refreshLiveEvents, 500);
 }
 
@@ -728,12 +739,14 @@ function stopLiveDetection(options = {}) {
   state.liveRecording = false;
   state.liveStreamJobs = [];
   stopRecordingStatusWatch();
+  stopLiveVoiceWarnings();
   els.liveStream.removeAttribute("src");
   els.liveStream.style.display = "none";
   clearLiveStreamGrid();
   els.liveStartButton.disabled = false;
   els.liveRecordInput.disabled = false;
   els.liveRecordLabelsInput.disabled = false;
+  els.liveVoiceInput.disabled = false;
   if (restorePreview) {
     const selectedMedia = selectedLiveMediaItems();
     if (selectedMedia.length) {
@@ -901,6 +914,115 @@ function liveRecordSuffix(job) {
 function makeClientRunId() {
   const random = Math.random().toString(36).slice(2, 10);
   return `live_${Date.now()}_${random}`;
+}
+
+function prepareLiveVoiceAudio() {
+  if (!els.liveVoiceInput.checked) return;
+  state.liveVoiceErrorNotified = false;
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) {
+    notifyLiveVoiceError("Voice alerts are not supported by this browser.");
+    return;
+  }
+  if (!state.liveVoiceContext) state.liveVoiceContext = new AudioContextClass();
+  if (state.liveVoiceContext.state === "suspended") {
+    state.liveVoiceContext.resume().catch(() => notifyLiveVoiceError("Click Start again to enable voice alerts."));
+  }
+  if (!state.liveVoiceBufferPromise) {
+    state.liveVoiceBufferPromise = Promise.all([
+      loadLiveVoiceBuffer("warning", "/api/live/audio/warning"),
+      loadLiveVoiceBuffer("all-clear", "/api/live/audio/all-clear"),
+    ]).catch(() => {
+      state.liveVoiceBufferPromise = null;
+      notifyLiveVoiceError("Voice alert recordings could not be loaded.");
+    });
+  }
+}
+
+async function loadLiveVoiceBuffer(name, url) {
+  const response = await fetch(url, { cache: "no-cache" });
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  const arrayBuffer = await response.arrayBuffer();
+  state.liveVoiceBuffers[name] = await state.liveVoiceContext.decodeAudioData(arrayBuffer);
+}
+
+function startLiveVoiceWarnings(jobs) {
+  stopLiveVoiceWarnings();
+  if (!els.liveVoiceInput.checked) return;
+  state.liveVoiceRunIds = new Set(jobs.map((job) => job.clientRunId).filter(Boolean));
+  state.liveVoiceSeenEventIds.clear();
+  scheduleLiveVoicePoll(500);
+  state.liveVoiceRepeatTimer = window.setInterval(() => {
+    if (state.liveRunning && state.liveVoiceActiveRunIds.size) playLiveVoiceClip("warning");
+  }, 15000);
+}
+
+function stopLiveVoiceWarnings() {
+  if (state.liveVoicePollTimer) window.clearTimeout(state.liveVoicePollTimer);
+  if (state.liveVoiceRepeatTimer) window.clearInterval(state.liveVoiceRepeatTimer);
+  state.liveVoicePollTimer = null;
+  state.liveVoiceRepeatTimer = null;
+  state.liveVoiceRunIds.clear();
+  state.liveVoiceActiveRunIds.clear();
+  state.liveVoiceSeenEventIds.clear();
+}
+
+function scheduleLiveVoicePoll(delayMs = 1000) {
+  if (!state.liveRunning || !state.liveVoiceRunIds.size) return;
+  if (state.liveVoicePollTimer) window.clearTimeout(state.liveVoicePollTimer);
+  state.liveVoicePollTimer = window.setTimeout(pollLiveVoiceEvents, delayMs);
+}
+
+async function pollLiveVoiceEvents() {
+  state.liveVoicePollTimer = null;
+  if (!state.liveRunning || !state.liveVoiceRunIds.size) return;
+  try {
+    const result = await getJson("/api/live/events?limit=200");
+    const events = Array.isArray(result.events) ? result.events.slice().reverse() : [];
+    events.forEach(handleLiveVoiceEvent);
+  } catch (_error) {
+    // The regular event panel reports API availability; keep voice polling quiet.
+  }
+  scheduleLiveVoicePoll();
+}
+
+function handleLiveVoiceEvent(event) {
+  const runId = String(event.client_run_id || "");
+  const eventId = String(event.event_id || "");
+  if (!state.liveVoiceRunIds.has(runId) || !eventId || state.liveVoiceSeenEventIds.has(eventId)) return;
+  state.liveVoiceSeenEventIds.add(eventId);
+  const type = String(event.event_type || "");
+  if (type === "drone_in_frame") {
+    const wasActive = state.liveVoiceActiveRunIds.size > 0;
+    state.liveVoiceActiveRunIds.add(runId);
+    if (!wasActive) playLiveVoiceClip("warning");
+  } else if (type === "drone_out_frame") {
+    const wasActive = state.liveVoiceActiveRunIds.size > 0;
+    state.liveVoiceActiveRunIds.delete(runId);
+    if (wasActive && !state.liveVoiceActiveRunIds.size) playLiveVoiceClip("all-clear");
+  }
+}
+
+async function playLiveVoiceClip(name) {
+  if (!els.liveVoiceInput.checked || !state.liveVoiceContext) return;
+  try {
+    if (state.liveVoiceBufferPromise) await state.liveVoiceBufferPromise;
+    const buffer = state.liveVoiceBuffers[name];
+    if (!buffer) return;
+    if (state.liveVoiceContext.state === "suspended") await state.liveVoiceContext.resume();
+    const source = state.liveVoiceContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(state.liveVoiceContext.destination);
+    source.start();
+  } catch (_error) {
+    notifyLiveVoiceError("Voice alert playback was blocked. Press Stop, then Start again.");
+  }
+}
+
+function notifyLiveVoiceError(message) {
+  if (state.liveVoiceErrorNotified) return;
+  state.liveVoiceErrorNotified = true;
+  showNotification(message, "error", 7000);
 }
 
 function startRecordingStatusWatch(jobs) {

@@ -113,6 +113,10 @@ def main() -> int:
             output_device=args.voice_device,
         )
     )
+    server.voice_audio_paths = {
+        "warning": resolve_user_path(args.voice_warning_file),
+        "all-clear": resolve_user_path(args.voice_all_clear_file),
+    }
     server.class_name = args.class_name
     server.auth_enabled = not args.no_auth
     server.auth_username = args.username
@@ -180,6 +184,7 @@ class AnnotationServer(ThreadingHTTPServer):
     detector_cache: dict[tuple[object, ...], object]
     live_model: Path
     voice_warning: object
+    voice_audio_paths: dict[str, Path]
     class_name: str
     auth_enabled: bool
     auth_username: str
@@ -318,6 +323,9 @@ class AnnotationHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             limit = min(200, max(1, parse_int(query_value(query, "limit", "50"))))
             self.send_live_events(limit)
+            return
+        if parsed.path.startswith("/api/live/audio/"):
+            self.send_live_audio(parsed.path.removeprefix("/api/live/audio/"))
             return
         if parsed.path == "/api/training/status":
             self.send_training_status()
@@ -543,6 +551,23 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 "events": read_recent_live_events(events_root, limit),
             }
         )
+
+    def send_live_audio(self, clip_name: str) -> None:
+        path = self.server.voice_audio_paths.get(clip_name)
+        if path is None:
+            self.send_error(HTTPStatus.NOT_FOUND, "Unknown live audio clip")
+            return
+        try:
+            data = path.read_bytes()
+        except OSError:
+            self.send_error(HTTPStatus.NOT_FOUND, "Live audio clip unavailable")
+            return
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "audio/wav")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(data)
 
     def send_training_status(self) -> None:
         self.send_json(training_status_payload(self.server))
