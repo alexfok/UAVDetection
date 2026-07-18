@@ -134,6 +134,7 @@ const els = {
   liveRecordInput: document.getElementById("liveRecordInput"),
   liveRecordLabelsInput: document.getElementById("liveRecordLabelsInput"),
   liveVoiceInput: document.getElementById("liveVoiceInput"),
+  liveVoiceTestButton: document.getElementById("liveVoiceTestButton"),
   liveSnapshotButton: document.getElementById("liveSnapshotButton"),
   liveFullscreenButton: document.getElementById("liveFullscreenButton"),
   liveStartButton: document.getElementById("liveStartButton"),
@@ -280,6 +281,7 @@ function bindEvents() {
   els.liveDeviceSelect.addEventListener("change", stopLiveDetectionForSourceChange);
   els.liveStartButton.addEventListener("click", startLiveDetection);
   els.liveStopButton.addEventListener("click", stopLiveDetection);
+  els.liveVoiceTestButton.addEventListener("click", testLiveVoiceWarning);
   els.liveRefreshEventsButton.addEventListener("click", refreshLiveEvents);
   els.liveRemoveEventsButton.addEventListener("click", removeSelectedEvents);
   els.liveEventList.addEventListener("change", onLiveEventSelectionChanged);
@@ -938,6 +940,12 @@ function prepareLiveVoiceAudio() {
       notifyLiveVoiceError("Voice alert recordings could not be loaded.");
     });
   }
+}
+
+function testLiveVoiceWarning() {
+  els.liveVoiceInput.checked = true;
+  prepareLiveVoiceAudio();
+  playLiveVoiceClip("warning");
 }
 
 async function loadLiveVoiceBuffer(name, url) {
