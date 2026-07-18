@@ -49,6 +49,17 @@ class AlertConfig:
 
 
 @dataclass
+class VoiceWarningConfig:
+    enabled: bool = True
+    warning_path: str = "assets/audio/drone_warning.wav"
+    all_clear_path: str = "assets/audio/drone_all_clear.wav"
+    repeat_seconds: float = 15.0
+    play_all_clear: bool = True
+    player: str = "auto"
+    output_device: str = ""
+
+
+@dataclass
 class UIConfig:
     window_name: str = "Fast Drone Detection PoC"
     show_window: bool = True
@@ -70,6 +81,7 @@ class AppConfig:
     detector: DetectorConfig = field(default_factory=DetectorConfig)
     tracker: TrackerConfig = field(default_factory=TrackerConfig)
     alert: AlertConfig = field(default_factory=AlertConfig)
+    voice_warning: VoiceWarningConfig = field(default_factory=VoiceWarningConfig)
     ui: UIConfig = field(default_factory=UIConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 

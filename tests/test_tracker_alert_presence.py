@@ -3,9 +3,10 @@ from __future__ import annotations
 import unittest
 
 from app.alert import AlertManager
-from app.config import AlertConfig, TrackerConfig
+from app.config import AlertConfig, TrackerConfig, VoiceWarningConfig
 from app.tracker import SimpleTracker, iou
 from app.types import Detection, TrackedDetection
+from app.voice_warning import VoiceWarningPlayer
 from scripts.annotation_server import DronePresenceState
 
 
@@ -69,6 +70,19 @@ class TrackerAlertPresenceTests(unittest.TestCase):
         self.assertEqual(closed.event_type, "drone_out_frame")
         self.assertEqual(closed.reason, "client_disconnected")
         self.assertIsNone(state.close(frame_index=6, now=11.0, reason="done"))
+
+    def test_voice_warning_announces_transitions_and_repeats(self) -> None:
+        player = VoiceWarningPlayer(VoiceWarningConfig(repeat_seconds=10.0, play_all_clear=True))
+        queued = []
+        player._enqueue = queued.append
+
+        self.assertEqual(player.update(True, now=1.0, source_id="camera-a"), "warning")
+        self.assertIsNone(player.update(True, now=5.0, source_id="camera-a"))
+        self.assertEqual(player.update(True, now=11.0, source_id="camera-a"), "warning")
+        self.assertIsNone(player.update(True, now=11.1, source_id="camera-b"))
+        self.assertIsNone(player.release_source("camera-a", now=12.0))
+        self.assertEqual(player.release_source("camera-b", now=13.0), "all_clear")
+        self.assertEqual([path.name for path in queued], ["drone_warning.wav", "drone_warning.wav", "drone_all_clear.wav"])
 
 
 def tracked(confidence: float, recent_hits: int) -> TrackedDetection:

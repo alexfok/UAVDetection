@@ -13,6 +13,7 @@ from app.config import AppConfig, load_config
 from app.sources import SourceSpec, camera_summary, open_source_capture, resolve_source
 from app.tracker import SimpleTracker
 from app.ui import OpenCVUI
+from app.voice_warning import VoiceWarningPlayer
 
 LOGGER = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ def main() -> int:
     detector = DroneDetector(config.detector)
     tracker = SimpleTracker(config.tracker, config.alert.window_seconds)
     alert_manager = AlertManager(config.alert)
+    voice_warning = VoiceWarningPlayer(config.voice_warning)
     ui = OpenCVUI(config.ui)
 
     try:
@@ -75,6 +77,7 @@ def main() -> int:
             detections = detector.detect(frame)
             tracks = tracker.update(detections, now)
             alert = alert_manager.update(tracks, now)
+            voice_warning.update(alert.active, now)
             fps = fps_meter.update()
 
             annotated = ui.draw(frame, tracks, alert, fps, source.label)
@@ -96,6 +99,7 @@ def main() -> int:
         if writer is not None:
             writer.release()
         ui.close()
+        voice_warning.close()
 
 
 def parse_args() -> argparse.Namespace:

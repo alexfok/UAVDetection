@@ -36,6 +36,17 @@ alert:
   window_seconds: 2.0
   cooldown_seconds: 1.0
 
+voice_warning:
+  enabled: true
+  warning_path: "assets/audio/drone_warning.wav"
+  all_clear_path: "assets/audio/drone_all_clear.wav"
+  repeat_seconds: 15.0
+  play_all_clear: true
+  # "auto" prefers aplay (reliable under systemd) and falls back to paplay.
+  player: "auto"
+  # Optional ALSA/PulseAudio device, for example "hw:0,3" for Jetson HDMI 0.
+  output_device: ""
+
 ui:
   window_name: "Fast Drone Detection PoC"
   show_window: true

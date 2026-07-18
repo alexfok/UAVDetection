@@ -73,6 +73,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--keyfile", type=Path, help="TLS private key file for HTTPS.")
     parser.add_argument("--camera-config", type=Path, default=Path("data_store/system_config/cameras.yaml"))
     parser.add_argument("--live-model", type=Path, default=Path("data_store/models/trained/yolov8n_drone_best.pt"))
+    parser.add_argument("--no-voice-warning", action="store_true", help="Disable prerecorded detection warnings.")
+    parser.add_argument("--voice-warning-file", type=Path, default=Path("assets/audio/drone_warning.wav"))
+    parser.add_argument("--voice-all-clear-file", type=Path, default=Path("assets/audio/drone_all_clear.wav"))
+    parser.add_argument("--voice-repeat-seconds", type=float, default=15.0)
+    parser.add_argument("--voice-player", choices=("auto", "aplay", "paplay"), default="auto")
+    parser.add_argument("--voice-device", default="", help="Optional ALSA or PulseAudio output device.")
     return parser.parse_args()
 
 
@@ -94,6 +100,19 @@ def main() -> int:
     server.detector_cache_lock = threading.Lock()
     server.detector_cache = {}
     server.live_model = resolve_user_path(args.live_model)
+    from app.config import VoiceWarningConfig
+    from app.voice_warning import VoiceWarningPlayer
+
+    server.voice_warning = VoiceWarningPlayer(
+        VoiceWarningConfig(
+            enabled=not args.no_voice_warning,
+            warning_path=str(resolve_user_path(args.voice_warning_file)),
+            all_clear_path=str(resolve_user_path(args.voice_all_clear_file)),
+            repeat_seconds=max(0.0, args.voice_repeat_seconds),
+            player=args.voice_player,
+            output_device=args.voice_device,
+        )
+    )
     server.class_name = args.class_name
     server.auth_enabled = not args.no_auth
     server.auth_username = args.username
@@ -136,7 +155,11 @@ def main() -> int:
         print("WARNING: server is reachable over plain HTTP. Use --certfile/--keyfile for HTTPS.")
     initialise_local_camera_cache(server)
     threading.Thread(target=prewarm_live_detector, args=(server,), daemon=True).start()
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        server.voice_warning.close()
+        server.server_close()
     return 0
 
 
@@ -156,6 +179,7 @@ class AnnotationServer(ThreadingHTTPServer):
     detector_cache_lock: threading.Lock
     detector_cache: dict[tuple[object, ...], object]
     live_model: Path
+    voice_warning: object
     class_name: str
     auth_enabled: bool
     auth_username: str
@@ -731,6 +755,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         last_detection_at = 0.0
         last_tracks = []
         last_alert = alert_manager.update([], time.monotonic())
+        voice_source_id = uuid.uuid4().hex
         stop_reason = "completed"
         event_logger = LiveEventLogger(
             PROJECT_ROOT / "data_store" / "detection_results" / "live_events",
@@ -852,6 +877,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                         last_detection_at = time.monotonic()
                         last_tracks = tracker.update(detections, last_detection_at)
                         last_alert = alert_manager.update(last_tracks, last_detection_at)
+                        self.server.voice_warning.update(last_alert.active, last_detection_at, voice_source_id)
                     tracks = last_tracks
                     alert = last_alert
                 fps = fps_meter.update()
@@ -906,6 +932,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
             if recorder is not None:
                 for segment in recorder.close():
                     event_logger.log_recording_saved(segment["path"], int(segment["size_bytes"]), record_labels)
+            self.server.voice_warning.release_source(voice_source_id, time.monotonic())
             if capture_worker is not None:
                 capture_worker.close()
             else:

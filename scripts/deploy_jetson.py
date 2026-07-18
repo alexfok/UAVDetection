@@ -28,6 +28,8 @@ SERVICE_FILE_ROOT = Path("/etc/systemd/system")
 SHELL_USERNAME_ARG = '"${ANNOTATION_SERVER_USERNAME:-admin}"'
 REQUIRED_SOURCE_PATHS = (
     "app",
+    "assets/audio/drone_warning.wav",
+    "assets/audio/drone_all_clear.wav",
     "configs",
     "scripts/annotation_server.py",
     "scripts/datastore_sync.py",
