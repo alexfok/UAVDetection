@@ -1026,11 +1026,16 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 if detection_ran and event_tracks and event_logger.should_log_detection(last_detection_event_at, event_now):
                     last_detection_event_at = event_now
                     event_logger.log_detection(event_tracks, detection_frame_index, fps, payload)
-                self.wfile.write(b"--frame\r\n")
-                self.wfile.write(b"Content-Type: image/jpeg\r\n")
-                self.wfile.write(f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii"))
-                self.wfile.write(payload)
-                self.wfile.write(b"\r\n")
+                # One socket/TLS write per frame avoids multipart headers and
+                # JPEG payloads being coalesced into visible bursts remotely.
+                multipart_frame = (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    + f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii")
+                    + payload
+                    + b"\r\n"
+                )
+                self.wfile.write(multipart_frame)
                 self.wfile.flush()
 
                 if source.is_image:
