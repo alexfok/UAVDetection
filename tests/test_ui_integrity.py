@@ -141,6 +141,7 @@ class UiIntegrityTests(unittest.TestCase):
             "function prepareLiveVoiceAudio",
             "function pollLiveVoiceEvents",
             "function handleLiveVoiceEvent",
+            "function maybePlayLiveVoiceWarning",
             '"/api/live/audio/warning"',
             '"/api/live/audio/all-clear"',
             "localStorage.getItem(UI_LAYOUT_STORAGE_KEY)",

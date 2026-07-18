@@ -44,6 +44,7 @@ const state = {
   liveVoiceBuffers: {},
   liveVoiceBufferPromise: null,
   liveVoiceErrorNotified: false,
+  liveVoiceLastWarningAt: 0,
   liveModelPath: "",
   trainingJob: null,
   diagnosticsJob: null,
@@ -951,10 +952,11 @@ function startLiveVoiceWarnings(jobs) {
   if (!els.liveVoiceInput.checked) return;
   state.liveVoiceRunIds = new Set(jobs.map((job) => job.clientRunId).filter(Boolean));
   state.liveVoiceSeenEventIds.clear();
+  state.liveVoiceLastWarningAt = 0;
   scheduleLiveVoicePoll(500);
   state.liveVoiceRepeatTimer = window.setInterval(() => {
-    if (state.liveRunning && state.liveVoiceActiveRunIds.size) playLiveVoiceClip("warning");
-  }, 15000);
+    if (state.liveRunning && state.liveVoiceActiveRunIds.size) maybePlayLiveVoiceWarning();
+  }, 1000);
 }
 
 function stopLiveVoiceWarnings() {
@@ -992,15 +994,24 @@ function handleLiveVoiceEvent(event) {
   if (!state.liveVoiceRunIds.has(runId) || !eventId || state.liveVoiceSeenEventIds.has(eventId)) return;
   state.liveVoiceSeenEventIds.add(eventId);
   const type = String(event.event_type || "");
-  if (type === "drone_in_frame") {
+  if (type === "drone_detected") {
+    maybePlayLiveVoiceWarning();
+  } else if (type === "drone_in_frame") {
     const wasActive = state.liveVoiceActiveRunIds.size > 0;
     state.liveVoiceActiveRunIds.add(runId);
-    if (!wasActive) playLiveVoiceClip("warning");
+    if (!wasActive) maybePlayLiveVoiceWarning();
   } else if (type === "drone_out_frame") {
     const wasActive = state.liveVoiceActiveRunIds.size > 0;
     state.liveVoiceActiveRunIds.delete(runId);
     if (wasActive && !state.liveVoiceActiveRunIds.size) playLiveVoiceClip("all-clear");
   }
+}
+
+function maybePlayLiveVoiceWarning() {
+  const now = Date.now();
+  if (state.liveVoiceLastWarningAt && now - state.liveVoiceLastWarningAt < 15000) return;
+  state.liveVoiceLastWarningAt = now;
+  playLiveVoiceClip("warning");
 }
 
 async function playLiveVoiceClip(name) {
