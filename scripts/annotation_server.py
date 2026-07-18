@@ -249,6 +249,68 @@ class DetectionBatchRequest:
         self.error = None
 
 
+@dataclass
+class AsyncDetectionResult:
+    detections: list[object]
+    frame_index: int
+    completed_at: float
+    error: Exception | None = None
+
+
+class AsyncDetectionWorker:
+    """Run inference off the MJPEG delivery thread and retain only one pending frame."""
+
+    def __init__(self, detector: object) -> None:
+        self.detector = detector
+        self.condition = threading.Condition()
+        self.request: tuple[object, int] | None = None
+        self.result: AsyncDetectionResult | None = None
+        self.busy = False
+        self.closed = False
+        self.thread = threading.Thread(target=self._run, name="live-detection", daemon=True)
+        self.thread.start()
+
+    def submit(self, frame: object, frame_index: int) -> bool:
+        with self.condition:
+            if self.closed or self.busy or self.request is not None or self.result is not None:
+                return False
+            copied = frame.copy() if hasattr(frame, "copy") else frame
+            self.request = (copied, frame_index)
+            self.condition.notify()
+            return True
+
+    def poll(self) -> AsyncDetectionResult | None:
+        with self.condition:
+            result = self.result
+            self.result = None
+            return result
+
+    def close(self) -> None:
+        with self.condition:
+            self.closed = True
+            self.condition.notify_all()
+        self.thread.join(timeout=2.0)
+
+    def _run(self) -> None:
+        while True:
+            with self.condition:
+                while self.request is None and not self.closed:
+                    self.condition.wait()
+                if self.request is None and self.closed:
+                    return
+                frame, frame_index = self.request
+                self.request = None
+                self.busy = True
+            try:
+                detections = self.detector.detect(frame)
+                result = AsyncDetectionResult(list(detections or []), frame_index, time.monotonic())
+            except Exception as exc:
+                result = AsyncDetectionResult([], frame_index, time.monotonic(), error=exc)
+            with self.condition:
+                self.result = result
+                self.busy = False
+
+
 def detector_cache_key(config: object) -> tuple[object, ...]:
     label_aliases = getattr(config, "label_aliases", {}) or {}
     target_classes = getattr(config, "target_classes", []) or []
@@ -778,6 +840,7 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         detection_interval = 1.0 / detect_fps
         last_frame_at = 0.0
         last_detection_at = 0.0
+        detection_frame_index = 0
         last_tracks = []
         last_alert = alert_manager.update([], time.monotonic())
         voice_source_id = uuid.uuid4().hex
@@ -823,7 +886,11 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 detector_state["error"] = str(exc)
                 event_logger.log_error(f"detector unavailable: {exc}")
 
-        threading.Thread(target=load_detector_for_stream, daemon=True).start()
+        if source.kind in {"video", "image"}:
+            # Hold prerecorded media at frame zero while a new preset/model shape warms up.
+            load_detector_for_stream()
+        else:
+            threading.Thread(target=load_detector_for_stream, daemon=True).start()
         last_detection_event_at = 0.0
         recorder: StreamRecorder | None = None
         recording_confirmed = False
@@ -847,7 +914,10 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 except Exception as exc:
                     event_logger.log_recording_failed(f"recording disabled: {exc}")
         capture_worker = None
+        detection_worker: AsyncDetectionWorker | None = None
         latest_frame_token = 0
+        playback_started_at = 0.0
+        source_fps = max(0.0, float(cap.get(cv2.CAP_PROP_FPS))) if source.kind == "video" else 0.0
         use_capture_worker = source.kind in {"camera", "rtsp", "stream"}
         if use_capture_worker:
             capture_worker = LatestFrameCapture(
@@ -862,6 +932,12 @@ class AnnotationHandler(BaseHTTPRequestHandler):
             capture_worker.start()
         try:
             while True:
+                now = time.monotonic()
+                wait = preview_interval - (now - last_frame_at)
+                if last_frame_at > 0 and wait > 0:
+                    time.sleep(wait)
+                last_frame_at = time.monotonic()
+
                 if capture_worker is not None:
                     latest_frame_token, frame, frame_index, capture_stop_reason = capture_worker.latest_after(latest_frame_token)
                     if frame is None:
@@ -871,18 +947,25 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                         time.sleep(0.01)
                         continue
                 else:
+                    if source.kind == "video" and source_fps > 0:
+                        if playback_started_at <= 0:
+                            playback_started_at = last_frame_at
+                        frame_index, source_available = advance_video_capture_to_realtime(
+                            cap,
+                            frame_index,
+                            source_fps,
+                            playback_started_at,
+                            last_frame_at,
+                        )
+                        if not source_available:
+                            stop_reason = "source_exhausted"
+                            break
                     ok, frame = cap.read()
                     if not ok or frame is None:
                         stop_reason = "source_exhausted"
                         break
                     failures = 0
                     frame_index += 1
-
-                now = time.monotonic()
-                wait = preview_interval - (now - last_frame_at)
-                if wait > 0:
-                    time.sleep(wait)
-                last_frame_at = time.monotonic()
 
                 frame = resize_frame(frame, max_width, max_height)
                 detector = detector_state.get("detector")
@@ -893,16 +976,31 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                     alert = last_alert
                     detector_status = " | detector error" if detector_state.get("error") else " | loading detector"
                 else:
-                    detection_due = last_detection_at <= 0 or time.monotonic() - last_detection_at >= detection_interval
-                    if frame_skip and frame_index % (frame_skip + 1) != 1:
-                        detection_due = False
-                    if detection_due:
+                    if source.is_image:
                         detections = detector.detect(frame)
                         detection_ran = True
                         last_detection_at = time.monotonic()
+                        detection_frame_index = frame_index
                         last_tracks = tracker.update(detections, last_detection_at)
                         last_alert = alert_manager.update(last_tracks, last_detection_at)
                         self.server.voice_warning.update(last_alert.active, last_detection_at, voice_source_id)
+                    else:
+                        if detection_worker is None:
+                            detection_worker = AsyncDetectionWorker(detector)
+                        result = detection_worker.poll()
+                        if result is not None:
+                            if result.error is not None:
+                                raise result.error
+                            detection_ran = True
+                            detection_frame_index = result.frame_index
+                            last_tracks = tracker.update(result.detections, result.completed_at)
+                            last_alert = alert_manager.update(last_tracks, result.completed_at)
+                            self.server.voice_warning.update(last_alert.active, result.completed_at, voice_source_id)
+                        detection_due = last_detection_at <= 0 or time.monotonic() - last_detection_at >= detection_interval
+                        if frame_skip and frame_index % (frame_skip + 1) != 1:
+                            detection_due = False
+                        if detection_due and detection_worker.submit(frame, frame_index):
+                            last_detection_at = time.monotonic()
                     tracks = last_tracks
                     alert = last_alert
                 fps = fps_meter.update()
@@ -932,12 +1030,12 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                 if detection_ran:
                     # Presence episodes should follow persisted alerts, not one-frame raw detections.
                     presence_tracks = alert.tracks if alert.active else []
-                    transition = presence_state.update(presence_tracks, frame_index, event_now)
+                    transition = presence_state.update(presence_tracks, detection_frame_index, event_now)
                     if transition is not None:
                         event_logger.log_presence_transition(transition)
                 if detection_ran and event_tracks and event_logger.should_log_detection(last_detection_event_at, event_now):
                     last_detection_event_at = event_now
-                    event_logger.log_detection(event_tracks, frame_index, fps, payload)
+                    event_logger.log_detection(event_tracks, detection_frame_index, fps, payload)
                 self.wfile.write(b"--frame\r\n")
                 self.wfile.write(b"Content-Type: image/jpeg\r\n")
                 self.wfile.write(f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii"))
@@ -957,6 +1055,8 @@ class AnnotationHandler(BaseHTTPRequestHandler):
             if recorder is not None:
                 for segment in recorder.close():
                     event_logger.log_recording_saved(segment["path"], int(segment["size_bytes"]), record_labels)
+            if detection_worker is not None:
+                detection_worker.close()
             self.server.voice_warning.release_source(voice_source_id, time.monotonic())
             if capture_worker is not None:
                 capture_worker.close()
@@ -1595,6 +1695,22 @@ def resize_frame(frame, max_width: int, max_height: int):
         return frame
     new_size = (int(width * scale), int(height * scale))
     return cv2.resize(frame, new_size, interpolation=cv2.INTER_AREA)
+
+
+def advance_video_capture_to_realtime(
+    cap: object,
+    frames_consumed: int,
+    source_fps: float,
+    playback_started_at: float,
+    now: float,
+) -> tuple[int, bool]:
+    """Drop undisplayed file frames so wall-clock playback matches source time."""
+    target_frame = max(0, int(max(0.0, now - playback_started_at) * source_fps))
+    while frames_consumed < target_frame:
+        if not cap.grab():
+            return frames_consumed, False
+        frames_consumed += 1
+    return frames_consumed, True
 
 
 class LatestFrameCapture:

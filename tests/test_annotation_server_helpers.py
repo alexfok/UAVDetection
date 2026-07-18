@@ -3,10 +3,14 @@ from __future__ import annotations
 import csv
 import json
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
 from scripts.annotation_server import (
+    AsyncDetectionWorker,
+    advance_video_capture_to_realtime,
     annotation_split_stats,
     parse_bool,
     parse_float,
@@ -22,6 +26,58 @@ from scripts.annotation_server import (
 
 
 class AnnotationServerHelperTests(unittest.TestCase):
+    def test_video_capture_drops_frames_to_match_wall_clock(self) -> None:
+        class FakeCapture:
+            def __init__(self) -> None:
+                self.grabbed = 0
+
+            def grab(self) -> bool:
+                self.grabbed += 1
+                return True
+
+        capture = FakeCapture()
+        consumed, available = advance_video_capture_to_realtime(
+            capture,
+            frames_consumed=0,
+            source_fps=16.0,
+            playback_started_at=100.0,
+            now=100.5,
+        )
+        self.assertTrue(available)
+        self.assertEqual(consumed, 8)
+        self.assertEqual(capture.grabbed, 8)
+
+    def test_async_detection_does_not_block_or_queue_stale_frames(self) -> None:
+        class BlockingDetector:
+            def __init__(self) -> None:
+                self.started = threading.Event()
+                self.release = threading.Event()
+
+            def detect(self, frame):
+                self.started.set()
+                self.release.wait(timeout=1.0)
+                return [frame]
+
+        detector = BlockingDetector()
+        worker = AsyncDetectionWorker(detector)
+        try:
+            self.assertTrue(worker.submit(["first"], 10))
+            self.assertTrue(detector.started.wait(timeout=1.0))
+            self.assertFalse(worker.submit(["stale"], 11))
+            self.assertIsNone(worker.poll())
+            detector.release.set()
+            deadline = time.monotonic() + 1.0
+            result = None
+            while result is None and time.monotonic() < deadline:
+                result = worker.poll()
+                time.sleep(0.005)
+            self.assertIsNotNone(result)
+            self.assertEqual(result.frame_index, 10)
+            self.assertEqual(result.detections, [["first"]])
+        finally:
+            detector.release.set()
+            worker.close()
+
     def test_safe_parsers_and_label_text(self) -> None:
         self.assertEqual(safe_name(" Field Test: #1 "), "Field_Test_1")
         self.assertEqual(query_value({"a": [""]}, "a", "fallback"), "fallback")

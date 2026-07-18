@@ -1151,9 +1151,9 @@ function updateRecordingTileStatus(runId, text) {
 
 function applyLivePreset() {
   const presets = {
-    balanced: { previewFps: "6", detectionFps: "2", skip: "0", imageSize: "640", previewSize: "1280x720", quality: "75" },
-    fast: { previewFps: "10", detectionFps: "1.5", skip: "0", imageSize: "416", previewSize: "854x480", quality: "65" },
-    quality: { previewFps: "4", detectionFps: "2", skip: "0", imageSize: "960", previewSize: "1920x1080", quality: "85" },
+    balanced: { previewFps: "12", detectionFps: "3", skip: "0", imageSize: "640", previewSize: "1280x720", quality: "75" },
+    fast: { previewFps: "15", detectionFps: "3", skip: "0", imageSize: "416", previewSize: "854x480", quality: "65" },
+    quality: { previewFps: "10", detectionFps: "3", skip: "0", imageSize: "960", previewSize: "1920x1080", quality: "85" },
   };
   const preset = presets[els.livePresetSelect.value];
   if (!preset) return;
