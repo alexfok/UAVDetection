@@ -99,6 +99,8 @@ def main() -> int:
     server.debug_session_path = None
     server.detector_cache_lock = threading.Lock()
     server.detector_cache = {}
+    server.video_detection_cache_lock = threading.Lock()
+    server.video_detection_cache = {}
     server.live_model = resolve_user_path(args.live_model)
     from app.config import VoiceWarningConfig
     from app.voice_warning import VoiceWarningPlayer
@@ -182,6 +184,8 @@ class AnnotationServer(ThreadingHTTPServer):
     debug_session_path: Path | None
     detector_cache_lock: threading.Lock
     detector_cache: dict[tuple[object, ...], object]
+    video_detection_cache_lock: threading.Lock
+    video_detection_cache: dict[tuple[object, ...], dict[int, list[object]]]
     live_model: Path
     voice_warning: object
     voice_audio_paths: dict[str, Path]
@@ -898,6 +902,49 @@ class AnnotationHandler(BaseHTTPRequestHandler):
             load_detector_for_stream()
         else:
             threading.Thread(target=load_detector_for_stream, daemon=True).start()
+        file_detection_results: dict[int, list[object]] | None = None
+        if source.kind == "video" and detector_state.get("detector") is not None:
+            try:
+                source_path = Path(str(source.capture_source))
+                source_stat = source_path.stat()
+                file_cache_key = (
+                    str(source_path.resolve()),
+                    source_stat.st_size,
+                    source_stat.st_mtime_ns,
+                    detector_cache_key(detector_config),
+                    round(detect_fps, 6),
+                    frame_skip,
+                    max_width,
+                    max_height,
+                )
+                with self.server.video_detection_cache_lock:
+                    file_detection_results = self.server.video_detection_cache.get(file_cache_key)
+                if file_detection_results is None:
+                    file_detection_results = {}
+                    detector = detector_state["detector"]
+                    detection_step = max(1, round(source_fps / detect_fps)) if source_fps > 0 else 1
+                    analysis_index = 0
+                    while True:
+                        ok, analysis_frame = cap.read()
+                        if not ok or analysis_frame is None:
+                            break
+                        analysis_index += 1
+                        if frame_skip and analysis_index % (frame_skip + 1) != 1:
+                            continue
+                        if analysis_index != 1 and (analysis_index - 1) % detection_step != 0:
+                            continue
+                        analysis_frame = resize_frame(analysis_frame, max_width, max_height)
+                        file_detection_results[analysis_index] = list(detector.detect(analysis_frame) or [])
+                    if not cap.set(cv2.CAP_PROP_POS_FRAMES, 0):
+                        raise RuntimeError("unable to rewind video after detection analysis")
+                    with self.server.video_detection_cache_lock:
+                        if len(self.server.video_detection_cache) >= 8:
+                            self.server.video_detection_cache.pop(next(iter(self.server.video_detection_cache)))
+                        self.server.video_detection_cache[file_cache_key] = file_detection_results
+            except Exception as exc:
+                file_detection_results = None
+                event_logger.log_error(f"frame-aligned video analysis unavailable: {exc}")
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         last_detection_event_at = 0.0
         recorder: StreamRecorder | None = None
         recording_confirmed = False
@@ -977,20 +1024,26 @@ class AnnotationHandler(BaseHTTPRequestHandler):
                         last_alert = alert_manager.update(last_tracks, last_detection_at)
                         self.server.voice_warning.update(last_alert.active, last_detection_at, voice_source_id)
                     elif source.kind == "video":
-                        # File demos infer synchronously at the configured rate.
-                        # Results therefore belong to this exact displayed frame
-                        # instead of arriving late and being painted on a newer one.
-                        detection_due = last_detection_at <= 0 or time.monotonic() - last_detection_at >= detection_interval
-                        if frame_skip and frame_index % (frame_skip + 1) != 1:
-                            detection_due = False
-                        if detection_due:
-                            detections = detector.detect(frame)
+                        # Cached file analysis keeps inference off the playback
+                        # path while preserving the exact frame association.
+                        if file_detection_results is not None and frame_index in file_detection_results:
+                            detections = file_detection_results[frame_index]
                             detection_ran = True
                             last_detection_at = time.monotonic()
                             detection_frame_index = frame_index
                             last_tracks = tracker.update(detections, last_detection_at)
                             last_alert = alert_manager.update(last_tracks, last_detection_at)
                             self.server.voice_warning.update(last_alert.active, last_detection_at, voice_source_id)
+                        elif file_detection_results is None:
+                            detection_due = last_detection_at <= 0 or time.monotonic() - last_detection_at >= detection_interval
+                            if detection_due:
+                                detections = detector.detect(frame)
+                                detection_ran = True
+                                last_detection_at = time.monotonic()
+                                detection_frame_index = frame_index
+                                last_tracks = tracker.update(detections, last_detection_at)
+                                last_alert = alert_manager.update(last_tracks, last_detection_at)
+                                self.server.voice_warning.update(last_alert.active, last_detection_at, voice_source_id)
                     else:
                         if detection_worker is None:
                             detection_worker = AsyncDetectionWorker(detector)
