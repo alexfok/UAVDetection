@@ -792,6 +792,7 @@ function liveStreamJobs() {
       label: `${item.relative || item.name} · ${item.kind}`,
       kind: item.kind,
       mediaPath: item.path,
+      mediaVersion: mediaVersion(item),
       params: { source: item.path },
     }));
   }
@@ -948,7 +949,7 @@ async function startAnalyzedFilePlayback(job, video, overlay, tile, stateText) {
     const detectionStep = Math.max(1, Number(analysis.detection_step) || 1);
     overlay.width = Math.max(1, Number(analysis.width) || 1920);
     overlay.height = Math.max(1, Number(analysis.height) || 1080);
-    video.src = mediaUrl(job.mediaPath);
+    video.src = mediaUrl(job.mediaPath, job.mediaVersion);
 
     const renderFrame = (_now, metadata) => {
       if (!active) return;
@@ -974,6 +975,15 @@ async function startAnalyzedFilePlayback(job, video, overlay, tile, stateText) {
       if (video.requestVideoFrameCallback) {
         frameCallbackId = video.requestVideoFrameCallback(renderFrame);
       }
+    }, { once: true });
+    video.addEventListener("error", () => {
+      if (!active) return;
+      tile.classList.remove("loading");
+      stateText.textContent = "Playback failed";
+      updateFileVoiceState(job, false, true);
+      const message = `${job.label || "Video"} could not be played. Use a browser-compatible H.264 MP4.`;
+      setLiveStatus(message);
+      showNotification(message, "error", 10000);
     }, { once: true });
     if (!video.requestVideoFrameCallback) {
       video.addEventListener("timeupdate", () => renderFrame(null, { mediaTime: video.currentTime }));

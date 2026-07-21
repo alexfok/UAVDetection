@@ -184,7 +184,11 @@ class UiIntegrityTests(unittest.TestCase):
             "requestVideoFrameCallback",
             "interpolatedFileDetections",
             "drawFileDetectionOverlay",
-            "video.src = mediaUrl(job.mediaPath)",
+            "mediaVersion: mediaVersion(item)",
+            "video.src = mediaUrl(job.mediaPath, job.mediaVersion)",
+            'video.addEventListener("error"',
+            'stateText.textContent = "Playback failed"',
+            "Use a browser-compatible H.264 MP4.",
         ]:
             self.assertIn(token, app)
         self.assertIn(".liveFilePlayback", css)

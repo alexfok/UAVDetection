@@ -1242,7 +1242,10 @@ class AnnotationHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(file_size))
             self.send_header("Accept-Ranges", "bytes")
             self.end_headers()
-            stream_file(media_path, self.wfile, 0, file_size - 1)
+            try:
+                stream_file(media_path, self.wfile, 0, file_size - 1)
+            except (BrokenPipeError, ConnectionResetError, ssl.SSLError):
+                pass
             return
 
         start, end = parse_range_header(range_header, file_size)
@@ -1256,7 +1259,10 @@ class AnnotationHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
         self.send_header("Content-Length", str(end - start + 1))
         self.end_headers()
-        stream_file(media_path, self.wfile, start, end)
+        try:
+            stream_file(media_path, self.wfile, start, end)
+        except (BrokenPipeError, ConnectionResetError, ssl.SSLError):
+            pass
 
     def read_json(self) -> dict[str, object]:
         length = int(self.headers.get("Content-Length", "0"))
