@@ -1,3 +1,25 @@
+1. Label current-model misses
+  Review new videos with the trained model and annotate:
+  Drones it completely missed
+  Low-confidence detections
+  Small or partially visible drones
+  Poorly positioned boxes
+  Frames immediately before detection begins and after it disappears
+  This “hard-example mining” is much more efficient than labeling random frames.
+
+2. Temporal logic can significantly improve operational quality:
+  Require detection in several consecutive frames before raising an alert.
+  Track detections across frames.
+  Allow a short gap without dropping the track.
+  Use a higher confidence requirement for a new track and a lower one for continuing an existing track.
+  Ignore implausibly brief or erratic detections.
+
+3. Increase image size from 640 to 960 or 1280 for distant drones.
+4. Tune the confidence threshold using the clean validation set.
+
+Voice alert
+Record detections for demo on existing clips
+
 # Fast UAV Detection PoC
 
 Standalone Python/OpenCV prototype for local UAV detection experiments from webcam, local video, RTSP streams, and offline media folders.
